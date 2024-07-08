@@ -24,7 +24,7 @@ torch.multiprocessing.set_sharing_strategy('file_system')
 
 
 # load preprocessed data:
-with open('C:\\Users\\kruglovdy\\Desktop\\finbert_data\\preproc_data', 'rb') as h:
+with open('..\\finbert_data\\preproc_data', 'rb') as h:
     preproc_data = pickle.load(h)
     numeric_values = preproc_data['numeric_values']
     embeddings = preproc_data['embeddings']
@@ -77,8 +77,8 @@ downstream_model = SequenceToTarget(
 )
 
 
-train_pq_files = ParquetFiles('C:\\Users\\kruglovdy\\Desktop\\finbert_data\\train.parquet\\')
-valid_pq_files = ParquetFiles('C:\\Users\\kruglovdy\\Desktop\\finbert_data\\valid.parquet\\')
+train_pq_files = ParquetFiles('..\\finbert_data\\train.parquet\\')
+valid_pq_files = ParquetFiles('..\\finbert_data\\valid.parquet\\')
 
 train_dataset = ParquetDataset(data_files=train_pq_files.data_files, shuffle_files=True)
 valid_dataset = ParquetDataset(data_files=valid_pq_files.data_files, shuffle_files=True)

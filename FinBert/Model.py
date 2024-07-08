@@ -299,11 +299,11 @@ class MLMCPCPretrainModule(pl.LightningModule):
         self.valid_cpc_loss(loss_cpc)
         self.valid_mlm_loss(loss_mlm)
 
-    def on_train_epoch_end(self, _):
+    def training_epoch_end(self, _):
         self.log(f'mlm/train_mlm_loss', self.train_mlm_loss, prog_bar=False)
         self.log(f'cpc/train_cpc_loss', self.train_cpc_loss, prog_bar=False)
 
-    def on_validation_epoch_end(self, _):
+    def validation_epoch_end(self, _):
         self.log(f'mlm/valid_mlm_loss', self.valid_mlm_loss, prog_bar=False)
         self.log(f'cpc/valid_cpc_loss', self.valid_cpc_loss, prog_bar=False)
         
