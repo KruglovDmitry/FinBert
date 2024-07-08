@@ -48,14 +48,10 @@ seq_encoder = MLMCPCPretrainModule(
     ),
     hidden_size=64,
     loss_temperature=20.0,
-
     total_steps=30000,
-
     replace_proba=0.1,
     neg_count=64,
-
     log_logits=False,
-
     encode_seq=True
 )
 
@@ -113,5 +109,5 @@ print(f'logger.version = {trainer_ft.logger.version}')
 trainer_ft.fit(downstream_model, finetune_dm)
 print(trainer_ft.logged_metrics)
 
-# При batch_size = 128 количество итераций в одной эпохе по всем данным равно 23 205 при этом время обучения 5 часов 45 минут
-# Запуск tensorboard из cmd - tensorboard --logdir=C:\Users\kruglovdy\source\repos\FinBert\FinBert\lightning_logs\_16_heads_2_layers_no_dropout_at_all_no_norm_emb_drop_0.3_PBDrop_0.2_no_transf_norm_drop_in_head_0.1
+# пїЅпїЅпїЅ batch_size = 128 пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ 23 205 пїЅпїЅпїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ 5 пїЅпїЅпїЅпїЅпїЅ 45 пїЅпїЅпїЅпїЅпїЅ
+# пїЅпїЅпїЅпїЅпїЅпїЅ tensorboard пїЅпїЅ cmd - tensorboard --logdir=C:\Users\kruglovdy\source\repos\FinBert\FinBert\lightning_logs\_16_heads_2_layers_no_dropout_at_all_no_norm_emb_drop_0.3_PBDrop_0.2_no_transf_norm_drop_in_head_0.1
