@@ -22,7 +22,6 @@ print("Pythorch version - ", torch.__version__)
 # os.environ["CUDA_VISIBLE_DEVICES"]="1"
 torch.multiprocessing.set_sharing_strategy('file_system')
 
-
 # load preprocessed data:
 with open('..\\finbert_data\\preproc_data', 'rb') as h:
     preproc_data = pickle.load(h)
@@ -115,3 +114,4 @@ print(trainer_ft.logged_metrics)
 
 # При batch_size = 128 количество итераций в одной эпохе по всем данным равно 23 205 при этом время обучения 5 часов 45 минут
 # Запуск tensorboard из cmd - tensorboard --logdir=C:\Users\kruglovdy\source\repos\FinBert\FinBert\lightning_logs\_16_heads_2_layers_no_dropout_at_all_no_norm_emb_drop_0.3_PBDrop_0.2_no_transf_norm_drop_in_head_0.1
+# matmul, einsum

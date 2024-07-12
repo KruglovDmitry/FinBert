@@ -22,6 +22,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="FinBert.py" />
+    <Compile Include="Longformer.py" />
+    <Compile Include="MatMulWithNoise.py" />
     <Compile Include="Model.py" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />

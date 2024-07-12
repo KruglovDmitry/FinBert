@@ -3,7 +3,8 @@ import numpy as np
 import torch
 import pytorch_lightning as pl
 from omegaconf import DictConfig
-from transformers import LongformerConfig, LongformerModel
+from transformers import LongformerConfig
+from Longformer import LongformerModel
 
 from ptls.data_load.padded_batch import PaddedBatch
 from torchmetrics import MeanMetric
@@ -286,9 +287,6 @@ class MLMCPCPretrainModule(pl.LightningModule):
         self.log(f'mlm/loss', loss_mlm)
         self.log(f'cpc/loss', loss_cpc)
         loss = self.weight_cpc*loss_cpc + self.weight_mlm*loss_mlm
-        self.internal_loger['train_mlm_loss'].append(loss_mlm)
-        self.internal_loger['train_cpc_loss'].append(loss_cpc)
-        self.internal_loger['loss'].append(loss)
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -299,11 +297,11 @@ class MLMCPCPretrainModule(pl.LightningModule):
         self.valid_cpc_loss(loss_cpc)
         self.valid_mlm_loss(loss_mlm)
 
-    def training_epoch_end(self, _):
+    def on_training_epoch_end(self, _):
         self.log(f'mlm/train_mlm_loss', self.train_mlm_loss, prog_bar=False)
         self.log(f'cpc/train_cpc_loss', self.train_cpc_loss, prog_bar=False)
 
-    def validation_epoch_end(self, _):
+    def on_validation_epoch_end(self, _):
         self.log(f'mlm/valid_mlm_loss', self.valid_mlm_loss, prog_bar=False)
         self.log(f'cpc/valid_cpc_loss', self.valid_cpc_loss, prog_bar=False)
         
