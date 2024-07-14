@@ -140,7 +140,7 @@ plt.show()
 df = pd.DataFrame(np.array([noise_arr, loss_arr, accuracy_arr, roc_auc_arr]))
 df.to_excel('C:\\Users\\kruglovdy\\Desktop\\Finbert\\Result.xlsx')
 
-# При batch_size = 128 количество итераций в одной эпохе по всем данным равно 23 205 при этом время обучения 5 часов 45 минут
-# Запуск tensorboard из cmd - tensorboard --logdir=C:\Users\kruglovdy\source\repos\FinBert\FinBert\lightning_logs\_16_heads_2_layers_no_dropout_at_all_no_norm_emb_drop_0.3_PBDrop_0.2_no_transf_norm_drop_in_head_0.1
+# пїЅпїЅпїЅ batch_size = 128 пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ 23 205 пїЅпїЅпїЅ пїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ 5 пїЅпїЅпїЅпїЅпїЅ 45 пїЅпїЅпїЅпїЅпїЅ
+# пїЅпїЅпїЅпїЅпїЅпїЅ tensorboard пїЅпїЅ cmd - tensorboard --logdir=C:\Users\kruglovdy\source\repos\FinBert\FinBert\lightning_logs\_16_heads_2_layers_no_dropout_at_all_no_norm_emb_drop_0.3_PBDrop_0.2_no_transf_norm_drop_in_head_0.1
 # matmul, einsum 
 # start 0..9 percents with 10 epochs - 14.15 end 16.11 (2 hours)
