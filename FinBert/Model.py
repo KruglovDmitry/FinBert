@@ -47,7 +47,8 @@ class MLMCPCPretrainModule(pl.LightningModule):
                  log_logits: bool = False,
                  weight_mlm: float = 0.5,
                  weight_cpc: float = 0.5,
-                 encode_seq = False):
+                 encode_seq = False,
+                 noise_percent = 0):
         """
 
         Parameters
@@ -109,6 +110,7 @@ class MLMCPCPretrainModule(pl.LightningModule):
                 attention_probs_dropout_prob=attention_probs_dropout_prob
             ),
             add_pooling_layer=False,
+            noise_percent=noise_percent,
         )
 
         self.cpc_head1 = ContrastivePredictionHead(embeds_dim=hidden_size)
@@ -304,7 +306,5 @@ class MLMCPCPretrainModule(pl.LightningModule):
     def on_validation_epoch_end(self, _):
         self.log(f'mlm/valid_mlm_loss', self.valid_mlm_loss, prog_bar=False)
         self.log(f'cpc/valid_cpc_loss', self.valid_cpc_loss, prog_bar=False)
-        
-
 
 

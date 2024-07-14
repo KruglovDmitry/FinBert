@@ -34,6 +34,7 @@ from transformers.utils import (
     logging,
     replace_return_docstrings,
 )
+from MatMulWithNoise import matmul_with_noise, einsum_with_noise
 
 logger = logging.get_logger(__name__)
 
@@ -484,7 +485,7 @@ class LongformerEmbeddings(nn.Module):
 
 
 class LongformerSelfAttention(nn.Module):
-    def __init__(self, config, layer_id):
+    def __init__(self, config, layer_id, noise_percent = 0):
         super().__init__()
         if config.hidden_size % config.num_attention_heads != 0:
             raise ValueError(
@@ -518,6 +519,7 @@ class LongformerSelfAttention(nn.Module):
         self.one_sided_attn_window_size = attention_window // 2
 
         self.config = config
+        self.noise_percent = noise_percent
 
     def forward(
         self,
@@ -829,7 +831,7 @@ class LongformerSelfAttention(nn.Module):
         # bcxd: batch_size * num_heads x chunks x 2window_overlap x head_dim
         # bcyd: batch_size * num_heads x chunks x 2window_overlap x head_dim
         # bcxy: batch_size * num_heads x chunks x 2window_overlap x 2window_overlap
-        diagonal_chunked_attention_scores = torch.einsum("bcxd,bcyd->bcxy", (query, key))  # multiply
+        diagonal_chunked_attention_scores = einsum_with_noise("bcxd,bcyd->bcxy", query, key, self.noise_percent)  # multiply
 
         # convert diagonals into columns
         diagonal_chunked_attention_scores = self._pad_and_transpose_last_two_dims(
@@ -911,7 +913,7 @@ class LongformerSelfAttention(nn.Module):
 
         chunked_attn_probs = self._pad_and_diagonalize(chunked_attn_probs)
 
-        context = torch.einsum("bcwd,bcdh->bcwh", (chunked_attn_probs, chunked_value))
+        context = einsum_with_noise("bcwd,bcdh->bcwh", chunked_attn_probs, chunked_value, self.noise_percent)
         return context.view(batch_size, num_heads, seq_len, head_dim).transpose(1, 2)
 
     @staticmethod
@@ -962,7 +964,7 @@ class LongformerSelfAttention(nn.Module):
         key_vectors_only_global[is_local_index_global_attn_nonzero] = key_vectors[is_index_global_attn_nonzero]
 
         # (batch_size, seq_len, num_heads, max_num_global_attn_indices)
-        attn_probs_from_global_key = torch.einsum("blhd,bshd->blhs", (query_vectors, key_vectors_only_global))
+        attn_probs_from_global_key = einsum_with_noise("blhd,bshd->blhs", query_vectors, key_vectors_only_global, self.noise_percent)
 
         # need to transpose since ONNX export only supports consecutive indexing: https://pytorch.org/docs/stable/onnx.html#writes-sets
         attn_probs_from_global_key = attn_probs_from_global_key.transpose(1, 3)
@@ -994,9 +996,7 @@ class LongformerSelfAttention(nn.Module):
         # use `matmul` because `einsum` crashes sometimes with fp16
         # attn = torch.einsum('blhs,bshd->blhd', (selected_attn_probs, selected_v))
         # compute attn output only global
-        attn_output_only_global = torch.matmul(
-            attn_probs_only_global.transpose(1, 2).clone(), value_vectors_only_global.transpose(1, 2).clone()
-        ).transpose(1, 2)
+        attn_output_only_global = matmul_with_noise(attn_probs_only_global.transpose(1, 2).clone(), value_vectors_only_global.transpose(1, 2).clone(), self.noise_percent).transpose(1, 2)
 
         # reshape attn probs
         attn_probs_without_global = attn_probs.narrow(
@@ -1134,9 +1134,9 @@ class LongformerSelfOutput(nn.Module):
 
 
 class LongformerAttention(nn.Module):
-    def __init__(self, config, layer_id=0):
+    def __init__(self, config, layer_id=0, noise_percent=0):
         super().__init__()
-        self.self = LongformerSelfAttention(config, layer_id)
+        self.self = LongformerSelfAttention(config, layer_id, noise_percent)
         self.output = LongformerSelfOutput(config)
         self.pruned_heads = set()
 
@@ -1214,9 +1214,9 @@ class LongformerOutput(nn.Module):
 
 
 class LongformerLayer(nn.Module):
-    def __init__(self, config, layer_id=0):
+    def __init__(self, config, layer_id=0, noise_percent=0):
         super().__init__()
-        self.attention = LongformerAttention(config, layer_id)
+        self.attention = LongformerAttention(config, layer_id, noise_percent)
         self.intermediate = LongformerIntermediate(config)
         self.output = LongformerOutput(config)
         self.chunk_size_feed_forward = config.chunk_size_feed_forward
@@ -1257,10 +1257,10 @@ class LongformerLayer(nn.Module):
 
 
 class LongformerEncoder(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, noise_percent=0):
         super().__init__()
         self.config = config
-        self.layer = nn.ModuleList([LongformerLayer(config, layer_id=i) for i in range(config.num_hidden_layers)])
+        self.layer = nn.ModuleList([LongformerLayer(config, layer_id=i, noise_percent=noise_percent) for i in range(config.num_hidden_layers)])
         self.gradient_checkpointing = False
 
     def forward(
@@ -1527,7 +1527,7 @@ class LongformerModel(LongformerPreTrainedModel):
 
     """
 
-    def __init__(self, config, add_pooling_layer=True):
+    def __init__(self, config, add_pooling_layer=True, noise_percent=0):
         super().__init__(config)
         self.config = config
 
@@ -1542,7 +1542,7 @@ class LongformerModel(LongformerPreTrainedModel):
             )
 
         self.embeddings = LongformerEmbeddings(config)
-        self.encoder = LongformerEncoder(config)
+        self.encoder = LongformerEncoder(config, noise_percent)
         self.pooler = LongformerPooler(config) if add_pooling_layer else None
 
         # Initialize weights and apply final processing
