@@ -17,6 +17,7 @@
 import math
 from dataclasses import dataclass
 from typing import Optional, Tuple, Union
+from numpy.core.numeric import fromfunction
 
 import torch
 import torch.utils.checkpoint
@@ -34,7 +35,6 @@ from transformers.utils import (
     logging,
     replace_return_docstrings,
 )
-from MatMulWithNoise import matmul_with_noise, einsum_with_noise
 
 logger = logging.get_logger(__name__)
 
@@ -485,7 +485,7 @@ class LongformerEmbeddings(nn.Module):
 
 
 class LongformerSelfAttention(nn.Module):
-    def __init__(self, config, layer_id, noise_percent = 0):
+    def __init__(self, config, layer_id):
         super().__init__()
         if config.hidden_size % config.num_attention_heads != 0:
             raise ValueError(
@@ -519,7 +519,6 @@ class LongformerSelfAttention(nn.Module):
         self.one_sided_attn_window_size = attention_window // 2
 
         self.config = config
-        self.noise_percent = noise_percent
 
     def forward(
         self,
@@ -530,6 +529,8 @@ class LongformerSelfAttention(nn.Module):
         is_index_global_attn=None,
         is_global_attn=None,
         output_attentions=False,
+        einsum_func=None,
+        matmul_func=None
     ):
         """
         [`LongformerSelfAttention`] expects *len(hidden_states)* to be multiple of *attention_window*. Padding to
@@ -560,7 +561,7 @@ class LongformerSelfAttention(nn.Module):
         key_vectors = key_vectors.view(seq_len, batch_size, self.num_heads, self.head_dim).transpose(0, 1)
 
         attn_scores = self._sliding_chunks_query_key_matmul(
-            query_vectors, key_vectors, self.one_sided_attn_window_size
+            query_vectors, key_vectors, self.one_sided_attn_window_size, einsum_func
         )
 
         # values to pad for attention probs
@@ -572,7 +573,7 @@ class LongformerSelfAttention(nn.Module):
         )
         # diagonal mask with zeros everywhere and -inf inplace of padding
         diagonal_mask = self._sliding_chunks_query_key_matmul(
-            float_mask.new_ones(size=float_mask.size()), float_mask, self.one_sided_attn_window_size
+            float_mask.new_ones(size=float_mask.size()), float_mask, self.one_sided_attn_window_size, einsum_func
         )
 
         # pad local attention probs
@@ -606,6 +607,7 @@ class LongformerSelfAttention(nn.Module):
                 is_index_global_attn_nonzero=is_index_global_attn_nonzero,
                 is_local_index_global_attn_nonzero=is_local_index_global_attn_nonzero,
                 is_local_index_no_global_attn_nonzero=is_local_index_no_global_attn_nonzero,
+                einsum_func=einsum_func
             )
             # concat to local_attn_probs
             # (batch_size, seq_len, num_heads, extra attention count + 2*window+1)
@@ -645,11 +647,13 @@ class LongformerSelfAttention(nn.Module):
                 max_num_global_attn_indices=max_num_global_attn_indices,
                 is_index_global_attn_nonzero=is_index_global_attn_nonzero,
                 is_local_index_global_attn_nonzero=is_local_index_global_attn_nonzero,
+                einsum_func=einsum_func,
+                matmul_func=matmul_func
             )
         else:
             # compute local attn only
             attn_output = self._sliding_chunks_matmul_attn_probs_value(
-                attn_probs, value_vectors, self.one_sided_attn_window_size
+                attn_probs, value_vectors, self.one_sided_attn_window_size, einsum_func
             )
 
         assert attn_output.size() == (batch_size, seq_len, self.num_heads, self.head_dim), "Unexpected size"
@@ -806,7 +810,7 @@ class LongformerSelfAttention(nn.Module):
             ending_input, -float("inf")
         ).where(ending_mask.bool(), ending_input)
 
-    def _sliding_chunks_query_key_matmul(self, query: torch.Tensor, key: torch.Tensor, window_overlap: int):
+    def _sliding_chunks_query_key_matmul(self, query: torch.Tensor, key: torch.Tensor, window_overlap: int, einsum_func: function):
         """
         Matrix multiplication of query and key tensors using with a sliding window attention pattern. This
         implementation splits the input into overlapping chunks of size 2w (e.g. 512 for pretrained Longformer) with an
@@ -831,7 +835,7 @@ class LongformerSelfAttention(nn.Module):
         # bcxd: batch_size * num_heads x chunks x 2window_overlap x head_dim
         # bcyd: batch_size * num_heads x chunks x 2window_overlap x head_dim
         # bcxy: batch_size * num_heads x chunks x 2window_overlap x 2window_overlap
-        diagonal_chunked_attention_scores = einsum_with_noise("bcxd,bcyd->bcxy", query, key, self.noise_percent)  # multiply
+        diagonal_chunked_attention_scores = einsum_func("bcxd,bcyd->bcxy", query, key)  # multiply
 
         # convert diagonals into columns
         diagonal_chunked_attention_scores = self._pad_and_transpose_last_two_dims(
@@ -873,7 +877,7 @@ class LongformerSelfAttention(nn.Module):
         return diagonal_attention_scores
 
     def _sliding_chunks_matmul_attn_probs_value(
-        self, attn_probs: torch.Tensor, value: torch.Tensor, window_overlap: int
+        self, attn_probs: torch.Tensor, value: torch.Tensor, window_overlap: int, einsum_func: function
     ):
         """
         Same as _sliding_chunks_query_key_matmul but for attn_probs and value tensors. Returned tensor will be of the
@@ -913,7 +917,7 @@ class LongformerSelfAttention(nn.Module):
 
         chunked_attn_probs = self._pad_and_diagonalize(chunked_attn_probs)
 
-        context = einsum_with_noise("bcwd,bcdh->bcwh", chunked_attn_probs, chunked_value, self.noise_percent)
+        context = einsum_func("bcwd,bcdh->bcwh", chunked_attn_probs, chunked_value, self.noise_percent)
         return context.view(batch_size, num_heads, seq_len, head_dim).transpose(1, 2)
 
     @staticmethod
@@ -953,6 +957,7 @@ class LongformerSelfAttention(nn.Module):
         is_index_global_attn_nonzero,
         is_local_index_global_attn_nonzero,
         is_local_index_no_global_attn_nonzero,
+        einsum_func
     ):
         batch_size = key_vectors.shape[0]
 
@@ -964,7 +969,7 @@ class LongformerSelfAttention(nn.Module):
         key_vectors_only_global[is_local_index_global_attn_nonzero] = key_vectors[is_index_global_attn_nonzero]
 
         # (batch_size, seq_len, num_heads, max_num_global_attn_indices)
-        attn_probs_from_global_key = einsum_with_noise("blhd,bshd->blhs", query_vectors, key_vectors_only_global, self.noise_percent)
+        attn_probs_from_global_key = einsum_func("blhd,bshd->blhs", query_vectors, key_vectors_only_global, self.noise_percent)
 
         # need to transpose since ONNX export only supports consecutive indexing: https://pytorch.org/docs/stable/onnx.html#writes-sets
         attn_probs_from_global_key = attn_probs_from_global_key.transpose(1, 3)
@@ -982,6 +987,8 @@ class LongformerSelfAttention(nn.Module):
         max_num_global_attn_indices,
         is_index_global_attn_nonzero,
         is_local_index_global_attn_nonzero,
+        einsum_func,
+        matmul_func
     ):
         batch_size = attn_probs.shape[0]
 
@@ -996,7 +1003,7 @@ class LongformerSelfAttention(nn.Module):
         # use `matmul` because `einsum` crashes sometimes with fp16
         # attn = torch.einsum('blhs,bshd->blhd', (selected_attn_probs, selected_v))
         # compute attn output only global
-        attn_output_only_global = matmul_with_noise(attn_probs_only_global.transpose(1, 2).clone(), value_vectors_only_global.transpose(1, 2).clone(), self.noise_percent).transpose(1, 2)
+        attn_output_only_global = matmul_func(attn_probs_only_global.transpose(1, 2).clone(), value_vectors_only_global.transpose(1, 2).clone(), self.noise_percent).transpose(1, 2)
 
         # reshape attn probs
         attn_probs_without_global = attn_probs.narrow(
@@ -1005,7 +1012,7 @@ class LongformerSelfAttention(nn.Module):
 
         # compute attn output with global
         attn_output_without_global = self._sliding_chunks_matmul_attn_probs_value(
-            attn_probs_without_global, value_vectors, self.one_sided_attn_window_size
+            attn_probs_without_global, value_vectors, self.one_sided_attn_window_size, einsum_func
         )
         return attn_output_only_global + attn_output_without_global
 
@@ -1134,9 +1141,9 @@ class LongformerSelfOutput(nn.Module):
 
 
 class LongformerAttention(nn.Module):
-    def __init__(self, config, layer_id=0, noise_percent=0):
+    def __init__(self, config, layer_id=0):
         super().__init__()
-        self.self = LongformerSelfAttention(config, layer_id, noise_percent)
+        self.self = LongformerSelfAttention(config, layer_id)
         self.output = LongformerSelfOutput(config)
         self.pruned_heads = set()
 
@@ -1167,6 +1174,8 @@ class LongformerAttention(nn.Module):
         is_index_global_attn=None,
         is_global_attn=None,
         output_attentions=False,
+        einsum_func=None,
+        matmul_func=None
     ):
         self_outputs = self.self(
             hidden_states,
@@ -1176,6 +1185,8 @@ class LongformerAttention(nn.Module):
             is_index_global_attn=is_index_global_attn,
             is_global_attn=is_global_attn,
             output_attentions=output_attentions,
+            einsum_func=einsum_func,
+            matmul_func=matmul_func
         )
         attn_output = self.output(self_outputs[0], hidden_states)
         outputs = (attn_output,) + self_outputs[1:]
@@ -1214,9 +1225,9 @@ class LongformerOutput(nn.Module):
 
 
 class LongformerLayer(nn.Module):
-    def __init__(self, config, layer_id=0, noise_percent=0):
+    def __init__(self, config, layer_id=0):
         super().__init__()
-        self.attention = LongformerAttention(config, layer_id, noise_percent)
+        self.attention = LongformerAttention(config, layer_id)
         self.intermediate = LongformerIntermediate(config)
         self.output = LongformerOutput(config)
         self.chunk_size_feed_forward = config.chunk_size_feed_forward
@@ -1231,6 +1242,8 @@ class LongformerLayer(nn.Module):
         is_index_global_attn=None,
         is_global_attn=None,
         output_attentions=False,
+        einsum_func=None,
+        matmul_func=None,
     ):
         self_attn_outputs = self.attention(
             hidden_states,
@@ -1240,6 +1253,8 @@ class LongformerLayer(nn.Module):
             is_index_global_attn=is_index_global_attn,
             is_global_attn=is_global_attn,
             output_attentions=output_attentions,
+            einsum_func=einsum_func,
+            matmul_func=matmul_func
         )
         attn_output = self_attn_outputs[0]
         outputs = self_attn_outputs[1:]
@@ -1257,10 +1272,10 @@ class LongformerLayer(nn.Module):
 
 
 class LongformerEncoder(nn.Module):
-    def __init__(self, config, noise_percent=0):
+    def __init__(self, config):
         super().__init__()
         self.config = config
-        self.layer = nn.ModuleList([LongformerLayer(config, layer_id=i, noise_percent=noise_percent) for i in range(config.num_hidden_layers)])
+        self.layer = nn.ModuleList([LongformerLayer(config, layer_id=i) for i in range(config.num_hidden_layers)])
         self.gradient_checkpointing = False
 
     def forward(
@@ -1272,6 +1287,8 @@ class LongformerEncoder(nn.Module):
         output_attentions=False,
         output_hidden_states=False,
         return_dict=True,
+        einsum_func=None,
+        matmul_func=None,
     ):
         is_index_masked = attention_mask < 0
         is_index_global_attn = attention_mask > 0
@@ -1302,6 +1319,8 @@ class LongformerEncoder(nn.Module):
                     is_index_global_attn,
                     is_global_attn,
                     output_attentions,
+                    einsum_func,
+                    matmul_func,
                 )
             else:
                 layer_outputs = layer_module(
@@ -1312,6 +1331,8 @@ class LongformerEncoder(nn.Module):
                     is_index_global_attn=is_index_global_attn,
                     is_global_attn=is_global_attn,
                     output_attentions=output_attentions,
+                    einsum_func=einsum_func,
+                    matmul_func=matmul_func,
                 )
             hidden_states = layer_outputs[0]
 
@@ -1527,7 +1548,7 @@ class LongformerModel(LongformerPreTrainedModel):
 
     """
 
-    def __init__(self, config, add_pooling_layer=True, noise_percent=0):
+    def __init__(self, config, add_pooling_layer=True):
         super().__init__(config)
         self.config = config
 
@@ -1542,7 +1563,7 @@ class LongformerModel(LongformerPreTrainedModel):
             )
 
         self.embeddings = LongformerEmbeddings(config)
-        self.encoder = LongformerEncoder(config, noise_percent)
+        self.encoder = LongformerEncoder(config)
         self.pooler = LongformerPooler(config) if add_pooling_layer else None
 
         # Initialize weights and apply final processing
@@ -1638,6 +1659,8 @@ class LongformerModel(LongformerPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        einsum_func: Optional[function] = None,
+        matmul_func: Optional[fromfunction] = None,
     ) -> Union[Tuple, LongformerBaseModelOutputWithPooling]:
         r"""
 
@@ -1732,6 +1755,8 @@ class LongformerModel(LongformerPreTrainedModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            einsum_func=einsum_func,
+            matmul_func=einsum_func,
         )
         sequence_output = encoder_outputs[0]
         pooled_output = self.pooler(sequence_output) if self.pooler is not None else None

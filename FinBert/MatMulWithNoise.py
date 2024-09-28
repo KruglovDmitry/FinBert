@@ -1,23 +1,36 @@
 from typing import Any
+from numpy import einsum
 import torch
 
-@staticmethod
-def matmul_with_noise(one: torch.Tensor, other: torch.Tensor, noise_percent = 0):
-    result = torch.matmul(one, other)
+class FuncFactory:
+    def __init__(self, noise_percent = 0):
+        self.noise_percent = noise_percent
     
-    if noise_percent == 0:
-        return result
+    def __matmul_with_noise__(self, first: torch.Tensor, second: torch.Tensor):
+        result = torch.matmul(first, second)
     
-    result_with_noise = result + torch.randn_like(result) * (result.max() * noise_percent)
-    return result_with_noise
+        if self.noise_percent == 0:
+            return result
+    
+        result_with_noise = result + torch.randn_like(result) * (result.max() * self.noise_percent)
+        return result_with_noise
 
-@staticmethod
-def einsum_with_noise(desc, one: torch.Tensor | Any, two: torch.Tensor | Any, noise_percent = 0):
-    result = torch.einsum(desc, (one, two))
+    def __einsum_with_noise__(self, desc, first: torch.Tensor | Any, second: torch.Tensor | Any):
+        result = torch.einsum(desc, (first, second))
     
-    if noise_percent == 0:
-        return result
+        if self.noise_percent == 0:
+            return result
 
-    result_with_noise = result + torch.randn_like(result) * (result.max() * noise_percent)
-    return result_with_noise
+        result_with_noise = result + torch.randn_like(result) * (result.max() * self.noise_percent)
+        return result_with_noise
+    
+    def matmul(self):
+        return self.__matmul_with_noise__
+
+    def einsum(self):
+        return self.__einsum_with_noise__
+        
+
+
+
 

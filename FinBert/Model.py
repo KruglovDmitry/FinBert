@@ -10,6 +10,7 @@ from ptls.data_load.padded_batch import PaddedBatch
 from torchmetrics import MeanMetric
 from ptls.frames.bert.losses.query_soft_max import QuerySoftmaxLoss
 from torch.nn import BCELoss
+from torch.nn import CrossEntropyLoss
 from torchmetrics import MetricCollection
 
 class ContrastivePredictionHead(torch.nn.Module):
@@ -47,8 +48,7 @@ class MLMCPCPretrainModule(pl.LightningModule):
                  log_logits: bool = False,
                  weight_mlm: float = 0.5,
                  weight_cpc: float = 0.5,
-                 encode_seq = False,
-                 noise_percent = 0):
+                 encode_seq = False,):
         """
 
         Parameters
@@ -110,7 +110,6 @@ class MLMCPCPretrainModule(pl.LightningModule):
                 attention_probs_dropout_prob=attention_probs_dropout_prob
             ),
             add_pooling_layer=False,
-            noise_percent=noise_percent,
         )
 
         self.cpc_head1 = ContrastivePredictionHead(embeds_dim=hidden_size)
@@ -129,7 +128,7 @@ class MLMCPCPretrainModule(pl.LightningModule):
         self.valid_cpc_loss = MeanMetric()
 
         self.encode_seq = encode_seq
-        self.internal_loger = {'train_mlm_loss': [], 'train_cpc_loss': [], 'loss': []}
+        self.loss = CrossEntropyLoss()
 
     def configure_optimizers(self):
         optim = torch.optim.Adam(self.parameters(),
@@ -171,7 +170,8 @@ class MLMCPCPretrainModule(pl.LightningModule):
         )
         return torch.where(mask.bool().unsqueeze(2).expand_as(x), replace_to, x)
 
-    def forward(self, z: PaddedBatch):
+    def forward(self, z: PaddedBatch, einsum_func=None, matmul_func=None,):
+        x,labels = z
         z = self.trx_encoder(z)
 
         B, T, H = z.payload.size()
@@ -204,6 +204,8 @@ class MLMCPCPretrainModule(pl.LightningModule):
             attention_mask=attention_mask,
             position_ids=position_ids,
             global_attention_mask=global_attention_mask,
+            einsum_func=einsum_func,
+            matmul_func=matmul_func,
         ).last_hidden_state
 
         if self.hparams.norm_predict:
@@ -214,7 +216,7 @@ class MLMCPCPretrainModule(pl.LightningModule):
         cpc_preds2 = self.cpc_head2.forward(out[:, 0])
 
         if self.encode_seq:
-            return out[:, 0]
+            return out[:, 0], self.loss(out[:, 0], labels)
         else:
             return PaddedBatch(out[:, 1:], z.seq_lens), [cpc_preds1, cpc_preds2]
 
@@ -306,5 +308,13 @@ class MLMCPCPretrainModule(pl.LightningModule):
     def on_validation_epoch_end(self, _):
         self.log(f'mlm/valid_mlm_loss', self.valid_mlm_loss, prog_bar=False)
         self.log(f'cpc/valid_cpc_loss', self.valid_cpc_loss, prog_bar=False)
+    
+    def eval_model(self, x, labels):
+        pred=self.forward(x)
+        correct=pred.argmax(dim=1).eq(labels).sum().item()
+        total=len(labels)
+        loss = self.loss(pred, labels)
+        accuracy = correct/total
+        return loss, accuracy
 
 
