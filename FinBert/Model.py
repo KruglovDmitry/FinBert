@@ -170,8 +170,7 @@ class MLMCPCPretrainModule(pl.LightningModule):
         )
         return torch.where(mask.bool().unsqueeze(2).expand_as(x), replace_to, x)
 
-    def forward(self, z: PaddedBatch, einsum_func=None, matmul_func=None,):
-        x,labels = z
+    def forward(self, z: PaddedBatch, targets=None, einsum_func=None, matmul_func=None,):
         z = self.trx_encoder(z)
 
         B, T, H = z.payload.size()
@@ -216,7 +215,13 @@ class MLMCPCPretrainModule(pl.LightningModule):
         cpc_preds2 = self.cpc_head2.forward(out[:, 0])
 
         if self.encode_seq:
-            return out[:, 0], self.loss(out[:, 0], labels)
+            
+            if targets is None:
+                loss = None
+            else:
+                loss = self.loss(out[:, 0], targets)
+
+            return out[:, 0], loss
         else:
             return PaddedBatch(out[:, 1:], z.seq_lens), [cpc_preds1, cpc_preds2]
 
@@ -309,11 +314,11 @@ class MLMCPCPretrainModule(pl.LightningModule):
         self.log(f'mlm/valid_mlm_loss', self.valid_mlm_loss, prog_bar=False)
         self.log(f'cpc/valid_cpc_loss', self.valid_cpc_loss, prog_bar=False)
     
-    def eval_model(self, x, labels):
-        pred=self.forward(x)
-        correct=pred.argmax(dim=1).eq(labels).sum().item()
+    def eval_model(self, x, labels, einsum_func, matmul_func):
+        prediction, loss = self.forward(x, labels, einsum_func, matmul_func)
+        correct = prediction.argmax(dim=1).eq(labels).sum().item()
         total=len(labels)
-        loss = self.loss(pred, labels)
+        loss = self.loss(prediction, labels)
         accuracy = correct/total
         return loss, accuracy
 

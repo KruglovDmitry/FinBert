@@ -96,25 +96,25 @@ for i in range(6):
     optimizer = torch.optim.AdamW(seq_encoder.parameters(), lr=0.001)
     ff = FuncFactory(noise)
 
-    train_dl = finetune_dm.train_dl()
+    train_dl = finetune_dm.train_dl(SeqToTargetIterableDataset(train_dataset, target_col_name='flag'))
     for iter, batch in enumerate(train_dl):
         xb, yb = batch[0], batch[1] 
-        pred, loss = seq_encoder(xb, ff.einsum, ff.matmul)
+        pred, loss = seq_encoder(xb, yb, ff.einsum_with_noise, ff.matmul_with_noise)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
 
         if iter % EVAL_INTERVAL == 0 or iter == MAX_ITERS - 1:
-            loss_train, acc_train = seq_encoder.eval_model(xb, yb)
+            loss_train, acc_train = seq_encoder.eval_model(xb, yb, ff.einsum_with_noise, ff.matmul_with_noise)
             print(f"Train step {iter}: loss {loss_train:.4f}, accuracy {acc_train:.4f}")
         
         if iter >= MAX_ITERS:
             break
             
-    val_dl = finetune_dm.val_dl()
+    val_dl = finetune_dm.val_dl(SeqToTargetIterableDataset(valid_dataset, target_col_name='flag'))
     for iter, batch in enumerate(val_dl):
         xb_val, yb_val = batch[0], batch[1]
-        loss_val, acc_val = seq_encoder.eval_model(xb_val, yb_val)
+        loss_val, acc_val = seq_encoder.eval_model(xb_val, yb_val, ff.einsum_with_noise, ff.matmul_with_noise)
         loss_val_arr.append(loss_val)
         acc_val_arr.append(acc_val)
         print(f"Validation step {iter}: loss {loss_val:.4f}, accuracy {acc_val:.4f}")

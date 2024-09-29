@@ -810,7 +810,7 @@ class LongformerSelfAttention(nn.Module):
             ending_input, -float("inf")
         ).where(ending_mask.bool(), ending_input)
 
-    def _sliding_chunks_query_key_matmul(self, query: torch.Tensor, key: torch.Tensor, window_overlap: int, einsum_func: function):
+    def _sliding_chunks_query_key_matmul(self, query: torch.Tensor, key: torch.Tensor, window_overlap: int, einsum_func):
         """
         Matrix multiplication of query and key tensors using with a sliding window attention pattern. This
         implementation splits the input into overlapping chunks of size 2w (e.g. 512 for pretrained Longformer) with an
@@ -877,7 +877,7 @@ class LongformerSelfAttention(nn.Module):
         return diagonal_attention_scores
 
     def _sliding_chunks_matmul_attn_probs_value(
-        self, attn_probs: torch.Tensor, value: torch.Tensor, window_overlap: int, einsum_func: function
+        self, attn_probs: torch.Tensor, value: torch.Tensor, window_overlap: int, einsum_func
     ):
         """
         Same as _sliding_chunks_query_key_matmul but for attn_probs and value tensors. Returned tensor will be of the
@@ -917,7 +917,7 @@ class LongformerSelfAttention(nn.Module):
 
         chunked_attn_probs = self._pad_and_diagonalize(chunked_attn_probs)
 
-        context = einsum_func("bcwd,bcdh->bcwh", chunked_attn_probs, chunked_value, self.noise_percent)
+        context = einsum_func("bcwd,bcdh->bcwh", chunked_attn_probs, chunked_value)
         return context.view(batch_size, num_heads, seq_len, head_dim).transpose(1, 2)
 
     @staticmethod
@@ -969,7 +969,7 @@ class LongformerSelfAttention(nn.Module):
         key_vectors_only_global[is_local_index_global_attn_nonzero] = key_vectors[is_index_global_attn_nonzero]
 
         # (batch_size, seq_len, num_heads, max_num_global_attn_indices)
-        attn_probs_from_global_key = einsum_func("blhd,bshd->blhs", query_vectors, key_vectors_only_global, self.noise_percent)
+        attn_probs_from_global_key = einsum_func("blhd,bshd->blhs", query_vectors, key_vectors_only_global)
 
         # need to transpose since ONNX export only supports consecutive indexing: https://pytorch.org/docs/stable/onnx.html#writes-sets
         attn_probs_from_global_key = attn_probs_from_global_key.transpose(1, 3)
@@ -1003,7 +1003,7 @@ class LongformerSelfAttention(nn.Module):
         # use `matmul` because `einsum` crashes sometimes with fp16
         # attn = torch.einsum('blhs,bshd->blhd', (selected_attn_probs, selected_v))
         # compute attn output only global
-        attn_output_only_global = matmul_func(attn_probs_only_global.transpose(1, 2).clone(), value_vectors_only_global.transpose(1, 2).clone(), self.noise_percent).transpose(1, 2)
+        attn_output_only_global = matmul_func(attn_probs_only_global.transpose(1, 2).clone(), value_vectors_only_global.transpose(1, 2).clone()).transpose(1, 2)
 
         # reshape attn probs
         attn_probs_without_global = attn_probs.narrow(
@@ -1659,8 +1659,8 @@ class LongformerModel(LongformerPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-        einsum_func: Optional[function] = None,
-        matmul_func: Optional[fromfunction] = None,
+        einsum_func = None,
+        matmul_func = None,
     ) -> Union[Tuple, LongformerBaseModelOutputWithPooling]:
         r"""
 
@@ -1756,7 +1756,7 @@ class LongformerModel(LongformerPreTrainedModel):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
             einsum_func=einsum_func,
-            matmul_func=einsum_func,
+            matmul_func=matmul_func,
         )
         sequence_output = encoder_outputs[0]
         pooled_output = self.pooler(sequence_output) if self.pooler is not None else None
