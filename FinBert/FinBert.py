@@ -1,5 +1,6 @@
 import os
 import sys
+from tqdm import tqdm
 import numpy as np
 import pandas as pd
 import random
@@ -10,13 +11,14 @@ import pickle
 import pytorch_lightning as pl
 import torchmetrics
 from ptls.frames.supervised import SequenceToTarget
+from torch.nn import CrossEntropyLoss
 from ptls.nn import TrxEncoder, Head, PBLinear, PBL2Norm, PBLayerNorm, PBDropout
 from ptls.data_load.datasets import ParquetDataset, ParquetFiles
 from ptls.data_load.iterable_processing import SeqLenFilter, FeatureFilter, ToTorch
 from ptls.frames.supervised.seq_to_target_dataset import SeqToTargetIterableDataset
 from ptls.data_load import IterableChain
 from ptls.frames import PtlsDataModule
-from Model import MLMCPCPretrainModule
+from Model import MLMCPCPretrainModule, Model
 import matplotlib.pyplot as plt
 
 from MatMulWithNoise import FuncFactory
@@ -69,6 +71,17 @@ seq_encoder = MLMCPCPretrainModule(
     log_logits=False,
     encode_seq=True,)
 
+model = Model(seq_encoder, 
+              Head(
+                input_size=64,
+                hidden_layers_sizes=[32, 8],
+                drop_probs=[0.1, 0],
+                use_batch_norm=True,
+                objective='classification',
+                num_classes=2,
+                ),
+              torch.nn.NLLLoss())
+
 # logger = pl.loggers.TensorBoardLogger(
 #     save_dir='.',
 #     name='lightning_logs',
@@ -80,42 +93,49 @@ seq_encoder = MLMCPCPretrainModule(
 #     mode='max', 
 #     monitor="valid/MulticlassAUROC")
 
-MAX_EPOCHS = 10
+TOTAL_EPOCHS = 10
 LIMIT_TRAIN_BATCHES = 10
 LIMIT_VAL_BATCHES = 1
-MAX_ITERS = 5000
+MAX_ITERS = 1000
 EVAL_INTERVAL = 200
 
 noise_arr = []
 loss_arr, accuracy_arr = [], []
 
-for i in range(6):
- 
-    noise = 0.1*i
-    loss_val_arr, acc_val_arr = [], []
-    optimizer = torch.optim.AdamW(seq_encoder.parameters(), lr=0.001)
-    ff = FuncFactory(noise)
+train_dl = finetune_dm.train_dl(SeqToTargetIterableDataset(train_dataset, target_col_name='flag'))
+val_dl = finetune_dm.val_dl(SeqToTargetIterableDataset(valid_dataset, target_col_name='flag'))
 
-    train_dl = finetune_dm.train_dl(SeqToTargetIterableDataset(train_dataset, target_col_name='flag'))
-    for iter, batch in enumerate(train_dl):
+optimizer = torch.optim.AdamW(seq_encoder.parameters(), lr=0.001)
+
+# TRAIN LOOP
+for epoch in range(TOTAL_EPOCHS):
+    
+    print(f"Start epoch - {epoch}")
+    for iter, batch in tqdm(enumerate(train_dl)):
         xb, yb = batch[0], batch[1] 
-        pred, loss = seq_encoder(xb, yb, ff.einsum_with_noise, ff.matmul_with_noise)
+        pred, loss = model(xb, yb, torch.einsum, torch.matmul)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
 
-        if iter % EVAL_INTERVAL == 0 or iter == MAX_ITERS - 1:
-            loss_train, acc_train = seq_encoder.eval_model(xb, yb, ff.einsum_with_noise, ff.matmul_with_noise)
-            print(f"Train step {iter}: loss {loss_train:.4f}, accuracy {acc_train:.4f}")
-        
         if iter >= MAX_ITERS:
             break
-            
-    val_dl = finetune_dm.val_dl(SeqToTargetIterableDataset(valid_dataset, target_col_name='flag'))
+    
+    loss_train, acc_train = model.eval_model(xb, yb, torch.einsum, torch.matmul)
+    print(f"Train epoch step {epoch}: loss - {loss_train:.4f}, accuracy - {acc_train:.4f}")
+
+        
+# EVALUATION LOOP
+for i in range(6):
+ 
+    noise = 0.1*i
+    loss_val_arr, acc_val_arr = [], []
+    ff = FuncFactory(noise)
+
     for iter, batch in enumerate(val_dl):
         xb_val, yb_val = batch[0], batch[1]
-        loss_val, acc_val = seq_encoder.eval_model(xb_val, yb_val, ff.einsum_with_noise, ff.matmul_with_noise)
-        loss_val_arr.append(loss_val)
+        loss_val, acc_val = model.eval_model(xb_val, yb_val, ff.einsum_with_noise, ff.matmul_with_noise)
+        loss_val_arr.append(loss_val.item())
         acc_val_arr.append(acc_val)
         print(f"Validation step {iter}: loss {loss_val:.4f}, accuracy {acc_val:.4f}")
         
