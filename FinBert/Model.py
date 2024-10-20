@@ -329,13 +329,15 @@ class Model(pl.LightningModule):
 
         return x, loss
 
-    def eval_model(self, x, labels, einsum_func, matmul_func):
+    def eval_model(self, x, labels, einsum_func, matmul_func, accuraccy_func, roc_auc_func, ):
         prediction, loss = self.forward(x, labels, einsum_func, matmul_func)
-        correct = prediction.argmax(dim=1).eq(labels).sum().item()
-        total=len(labels)
-        loss = self.loss(prediction, labels)
-        accuracy = correct/total
-        return loss, accuracy
+        #correct = prediction.argmax(dim=1).eq(labels).sum().item()
+        #total=len(labels)
+        #loss = self.loss(prediction, labels)
+        #accuracy = correct/total
+        accuracy = accuraccy_func(prediction, labels)
+        roc_auc = roc_auc_func(prediction, labels)
+        return loss, accuracy, roc_auc
 
     def predict(self, x):
         pass

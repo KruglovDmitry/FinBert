@@ -20,7 +20,6 @@ from ptls.data_load import IterableChain
 from ptls.frames import PtlsDataModule
 from Model import MLMCPCPretrainModule, Model
 import matplotlib.pyplot as plt
-
 from MatMulWithNoise import FuncFactory
 
 print("Pythorch version - ", torch.__version__)
@@ -54,8 +53,8 @@ finetune_dm = PtlsDataModule(
     train_data=SeqToTargetIterableDataset(train_dataset, target_col_name='flag'),
     valid_data=SeqToTargetIterableDataset(valid_dataset, target_col_name='flag'),
     train_num_workers=0, #20
-    train_batch_size=1024,
-    valid_batch_size=1024,)
+    train_batch_size=128,
+    valid_batch_size=128,)
 
 seq_encoder = MLMCPCPretrainModule(
     trx_encoder=torch.nn.Sequential(
@@ -93,55 +92,85 @@ model = Model(seq_encoder,
 #     mode='max', 
 #     monitor="valid/MulticlassAUROC")
 
-TOTAL_EPOCHS = 10
-LIMIT_TRAIN_BATCHES = 10
-LIMIT_VAL_BATCHES = 1
-MAX_ITERS = 1000
+TOTAL_EPOCHS = 5
+MAX_ITERS = 3000 # Total 3000000 uniqe id
 EVAL_INTERVAL = 200
-
-noise_arr = []
-loss_arr, accuracy_arr = [], []
 
 train_dl = finetune_dm.train_dl(SeqToTargetIterableDataset(train_dataset, target_col_name='flag'))
 val_dl = finetune_dm.val_dl(SeqToTargetIterableDataset(valid_dataset, target_col_name='flag'))
-
 optimizer = torch.optim.AdamW(seq_encoder.parameters(), lr=0.001)
+
+iters = []
+loss_arr, accuracy_arr, roc_auc_arr = [], [], []
 
 # TRAIN LOOP
 for epoch in range(TOTAL_EPOCHS):
     
     print(f"Start epoch - {epoch}")
-    for iter, batch in tqdm(enumerate(train_dl)):
+    
+    for iter, batch in enumerate(train_dl):
         xb, yb = batch[0], batch[1] 
         pred, loss = model(xb, yb, torch.einsum, torch.matmul)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
+        
+        if iter % EVAL_INTERVAL == 0 or iter == MAX_ITERS - 1:
+            loss_train, acc_train, roc_auc_train = model.eval_model(
+                xb, yb, 
+                torch.einsum, torch.matmul,
+                torchmetrics.AUROC(task="multiclass", num_classes=2), torchmetrics.Accuracy(task="multiclass", num_classes=2))
+            
+            iters.append(epoch * MAX_ITERS + iter)
+            loss_arr.append(loss_train.item())
+            accuracy_arr.append(acc_train)
+            roc_auc_arr.append(roc_auc_train)
+            
+            print(f"Train epoch {epoch}, iteration {iter}: loss - {loss_train:.4f}, accuracy - {acc_train:.4f}, roc_auc - {roc_auc_train:.4f}")
 
         if iter >= MAX_ITERS:
             break
     
-    loss_train, acc_train = model.eval_model(xb, yb, torch.einsum, torch.matmul)
-    print(f"Train epoch step {epoch}: loss - {loss_train:.4f}, accuracy - {acc_train:.4f}")
+plt.plot(iters, loss_arr, color='y', label='Loss') 
+plt.plot(iters, accuracy_arr, color='r', label='Accuracy')
+plt.plot(iters, roc_auc_arr, color='g', label='ROC_AUC')
 
+plt.xlabel("Epoch") 
+plt.ylabel("Magnitude") 
+plt.title("Education")
+plt.legend()
+plt.grid()
+plt.savefig(f"C:\\Users\\kruglovdy\\Desktop\\Finbert\\Education.png")
+plt.show()
+
+noise_arr = []
+loss_arr, accuracy_arr, roc_auc_arr = [], [], []
         
 # EVALUATION LOOP
 for i in range(6):
  
     noise = 0.1*i
-    loss_val_arr, acc_val_arr = [], []
+    loss_val_arr, acc_val_arr, roc_auc_val_arr = [], [], []
     ff = FuncFactory(noise)
 
     for iter, batch in enumerate(val_dl):
+        
         xb_val, yb_val = batch[0], batch[1]
-        loss_val, acc_val = model.eval_model(xb_val, yb_val, ff.einsum_with_noise, ff.matmul_with_noise)
+        loss_val, acc_val, roc_auc_val = model.eval_model(
+            xb_val, yb_val, 
+            ff.einsum_with_noise, ff.matmul_with_noise, 
+            torchmetrics.AUROC(task="multiclass", num_classes=2), torchmetrics.Accuracy(task="multiclass", num_classes=2))
+        
         loss_val_arr.append(loss_val.item())
-        acc_val_arr.append(acc_val)
-        print(f"Validation step {iter}: loss {loss_val:.4f}, accuracy {acc_val:.4f}")
+        acc_val_arr.append(acc_val.item())
+        roc_auc_val_arr.append(roc_auc_val.item())
+        
+        print(f"Validation step {iter}: loss - {loss_val:.4f}, accuracy - {acc_val:.4f}, roc_auc - {roc_auc_val:.4f}")
         
     noise_arr.append(noise)
     loss_arr.append(statistics.mean(loss_val_arr))
     accuracy_arr.append(statistics.mean(acc_val_arr))
+    roc_auc_arr.append(statistics.mean(roc_auc_val_arr))
     
     # downstream_model = SequenceToTarget(
     #     seq_encoder=seq_encoder,
@@ -179,19 +208,12 @@ for i in range(6):
  
 plt.plot(noise_arr, loss_arr, color='y', label='Loss') 
 plt.plot(noise_arr, accuracy_arr, color='r', label='Accuracy')
+plt.plot(noise_arr, roc_auc_arr, color='g', label='ROC_AUC')
 
 plt.xlabel("Noise percent") 
 plt.ylabel("Magnitude") 
 plt.title("Matrix multiplication noise effect")
 plt.legend()
 plt.grid()
-#plt.savefig(f"C:\\Users\\kruglovdy\\Desktop\\Finbert\\Result.png")
+plt.savefig(f"C:\\Users\\kruglovdy\\Desktop\\Finbert\\Noise_on_inference.png")
 plt.show()
-
-#df = pd.DataFrame(np.array([noise_arr, loss_arr, accuracy_arr]))
-#df.to_excel('C:\\Users\\kruglovdy\\Desktop\\Finbert\\Result.xlsx')
-
-# ��� batch_size = 128 ���������� �������� � ����� ����� �� ���� ������ ����� 23 205 ��� ���� ����� �������� 5 ����� 45 �����
-# ������ tensorboard �� cmd - tensorboard --logdir=C:\Users\kruglovdy\source\repos\FinBert\FinBert\lightning_logs\_16_heads_2_layers_no_dropout_at_all_no_norm_emb_drop_0.3_PBDrop_0.2_no_transf_norm_drop_in_head_0.1
-# matmul, einsum 
-# start 0..9 percents with 10 epochs - 14.15 end 16.11 (2 hours)
