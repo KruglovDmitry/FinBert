@@ -11,6 +11,7 @@ from torchmetrics import MeanMetric
 from ptls.frames.bert.losses.query_soft_max import QuerySoftmaxLoss
 from torch.nn import BCELoss
 from torchmetrics import MetricCollection
+from torch.nn import CrossEntropyLoss
 
 class ContrastivePredictionHead(torch.nn.Module):
 
@@ -127,6 +128,7 @@ class MLMCPCPretrainModule(pl.LightningModule):
         self.valid_cpc_loss = MeanMetric()
 
         self.encode_seq = encode_seq
+        self.loss = CrossEntropyLoss()
 
     def configure_optimizers(self):
         optim = torch.optim.Adam(self.parameters(),
@@ -212,10 +214,15 @@ class MLMCPCPretrainModule(pl.LightningModule):
         cpc_preds1 = self.cpc_head1.forward(out[:, 0])
         cpc_preds2 = self.cpc_head2.forward(out[:, 0])
 
-        if self.encode_seq:
-            return out[:, 0]
+        if targets is None:
+            loss = None
         else:
-            return PaddedBatch(out[:, 1:], z.seq_lens), [cpc_preds1, cpc_preds2]
+            loss = self.loss(out[:, 0], targets)
+
+        if self.encode_seq:
+            return out[:, 0], loss
+        else:
+            return PaddedBatch(out[:, 1:], z.seq_lens), [cpc_preds1, cpc_preds2], loss
 
     def get_neg_ix(self, mask):
         """Sample from predicts, where `mask == True`, without self element.
@@ -305,8 +312,7 @@ class MLMCPCPretrainModule(pl.LightningModule):
     def on_validation_epoch_end(self, _):
         self.log(f'mlm/valid_mlm_loss', self.valid_mlm_loss, prog_bar=False)
         self.log(f'cpc/valid_cpc_loss', self.valid_cpc_loss, prog_bar=False)
-    
-
+        
 
 class Model(pl.LightningModule):
     def __init__(self, 
@@ -329,15 +335,15 @@ class Model(pl.LightningModule):
 
         return x, loss
 
-    def eval_model(self, x, labels, einsum_func, matmul_func, accuraccy_func, roc_auc_func, ):
-        prediction, loss = self.forward(x, labels, einsum_func, matmul_func)
-        #correct = prediction.argmax(dim=1).eq(labels).sum().item()
-        #total=len(labels)
-        #loss = self.loss(prediction, labels)
-        #accuracy = correct/total
-        accuracy = accuraccy_func(prediction, labels)
-        roc_auc = roc_auc_func(prediction, labels)
-        return loss, accuracy, roc_auc
-
     def predict(self, x):
         pass
+    
+def eval_model(model, x, labels, einsum_func, matmul_func, loss_func, accuraccy_func, roc_auc_func, ):
+    prediction, loss = model.forward(x, labels, einsum_func, matmul_func)
+    correct = prediction.argmax(dim=1).eq(labels).sum().item()
+    total=len(labels)
+    loss = loss_func(prediction, labels)
+    accuracy = correct/total
+    #accuracy = accuraccy_func(prediction, labels)
+    #roc_auc = roc_auc_func(prediction, labels)
+    return loss, accuracy #, roc_auc
