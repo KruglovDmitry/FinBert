@@ -129,7 +129,6 @@ class MLMCPCPretrainModule(pl.LightningModule):
         self.valid_cpc_loss = MeanMetric()
 
         self.encode_seq = encode_seq
-        self.internal_loger = {'train_mlm_loss': [], 'train_cpc_loss': [], 'loss': []}
 
     def configure_optimizers(self):
         optim = torch.optim.Adam(self.parameters(),

@@ -34,7 +34,7 @@ from transformers.utils import (
     logging,
     replace_return_docstrings,
 )
-from MatMulWithNoise import matmul_with_noise, einsum_with_noise
+from MatMulWithNoise import matmul_with_noise, einsum_with_noise, bmm_with_noise
 
 logger = logging.get_logger(__name__)
 
@@ -1049,7 +1049,7 @@ class LongformerSelfAttention(nn.Module):
         )  # batch_size * self.num_heads, seq_len, head_dim)
 
         # compute attn scores
-        global_attn_scores = torch.bmm(global_query_vectors_only_global, global_key_vectors.transpose(1, 2))
+        global_attn_scores = bmm_with_noise(global_query_vectors_only_global, global_key_vectors.transpose(1, 2))
 
         assert list(global_attn_scores.size()) == [
             batch_size * self.num_heads,
@@ -1099,7 +1099,7 @@ class LongformerSelfAttention(nn.Module):
         )
 
         # global attn output
-        global_attn_output = torch.bmm(global_attn_probs, global_value_vectors)
+        global_attn_output = bmm_with_noise(global_attn_probs, global_value_vectors)
 
         assert list(global_attn_output.size()) == [
             batch_size * self.num_heads,
