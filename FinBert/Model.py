@@ -170,7 +170,7 @@ class MLMCPCPretrainModule(pl.LightningModule):
         )
         return torch.where(mask.bool().unsqueeze(2).expand_as(x), replace_to, x)
 
-    def forward(self, z: PaddedBatch, targets=None, einsum_func=None, matmul_func=None,):
+    def forward(self, z: PaddedBatch, targets=None, einsum_func=None, matmul_func=None, bmm_func=None):
         z = self.trx_encoder(z)
 
         B, T, H = z.payload.size()
@@ -205,6 +205,7 @@ class MLMCPCPretrainModule(pl.LightningModule):
             global_attention_mask=global_attention_mask,
             einsum_func=einsum_func,
             matmul_func=matmul_func,
+            bmm_func=bmm_func,
         ).last_hidden_state
 
         if self.hparams.norm_predict:
@@ -214,15 +215,11 @@ class MLMCPCPretrainModule(pl.LightningModule):
         cpc_preds1 = self.cpc_head1.forward(out[:, 0])
         cpc_preds2 = self.cpc_head2.forward(out[:, 0])
 
-        if targets is None:
-            loss = None
-        else:
-            loss = self.loss(out[:, 0], targets)
 
         if self.encode_seq:
-            return out[:, 0], loss
+            return out[:, 0]
         else:
-            return PaddedBatch(out[:, 1:], z.seq_lens), [cpc_preds1, cpc_preds2], loss
+            return PaddedBatch(out[:, 1:], z.seq_lens), [cpc_preds1, cpc_preds2]
 
     def get_neg_ix(self, mask):
         """Sample from predicts, where `mask == True`, without self element.
@@ -324,8 +321,8 @@ class Model(pl.LightningModule):
         self.head = head
         self.loss = loss
 
-    def forward(self, x, targets=None, einsum_func=None, matmul_func=None,):
-        x = self.seq_encoder(x, targets, einsum_func, matmul_func,)
+    def forward(self, x, targets=None, einsum_func=None, matmul_func=None, bmm_func=None):
+        x = self.seq_encoder(x, targets, einsum_func, matmul_func, bmm_func)
         x = self.head(x)
         
         if targets is None:
@@ -338,12 +335,9 @@ class Model(pl.LightningModule):
     def predict(self, x):
         pass
     
-def eval_model(model, x, labels, einsum_func, matmul_func, loss_func, accuraccy_func, roc_auc_func, ):
-    prediction, loss = model.forward(x, labels, einsum_func, matmul_func)
-    correct = prediction.argmax(dim=1).eq(labels).sum().item()
-    total=len(labels)
+def eval_model(model, x, labels, einsum_func, matmul_func, bmm_func, loss_func, accuraccy_func, roc_auc_func, ):
+    prediction, loss = model.forward(x, labels, einsum_func, matmul_func, bmm_func)
     loss = loss_func(prediction, labels)
-    accuracy = correct/total
-    #accuracy = accuraccy_func(prediction, labels)
-    #roc_auc = roc_auc_func(prediction, labels)
-    return loss, accuracy #, roc_auc
+    accuracy = accuraccy_func(prediction, labels)
+    roc_auc = roc_auc_func(prediction, labels)
+    return loss, accuracy, roc_auc

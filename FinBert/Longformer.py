@@ -21,7 +21,7 @@ from numpy.core.numeric import fromfunction
 
 import torch
 import torch.utils.checkpoint
-from torch import nn
+from torch import bmm, nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 from transformers import LongformerConfig
 from transformers.activations import ACT2FN, gelu
@@ -530,7 +530,8 @@ class LongformerSelfAttention(nn.Module):
         is_global_attn=None,
         output_attentions=False,
         einsum_func=None,
-        matmul_func=None
+        matmul_func=None,
+        bmm_func=None
     ):
         """
         [`LongformerSelfAttention`] expects *len(hidden_states)* to be multiple of *attention_window*. Padding to
@@ -670,6 +671,7 @@ class LongformerSelfAttention(nn.Module):
                 is_index_global_attn_nonzero=is_index_global_attn_nonzero,
                 is_local_index_no_global_attn_nonzero=is_local_index_no_global_attn_nonzero,
                 is_index_masked=is_index_masked,
+                bmm_func=bmm_func
             )
 
             # get only non zero global attn output
@@ -1025,6 +1027,7 @@ class LongformerSelfAttention(nn.Module):
         is_index_global_attn_nonzero,
         is_local_index_no_global_attn_nonzero,
         is_index_masked,
+        bmm_func
     ):
         seq_len, batch_size = hidden_states.shape[:2]
 
@@ -1056,7 +1059,7 @@ class LongformerSelfAttention(nn.Module):
         )  # batch_size * self.num_heads, seq_len, head_dim)
 
         # compute attn scores
-        global_attn_scores = torch.bmm(global_query_vectors_only_global, global_key_vectors.transpose(1, 2))
+        global_attn_scores = bmm_func(global_query_vectors_only_global, global_key_vectors.transpose(1, 2))
 
         assert list(global_attn_scores.size()) == [
             batch_size * self.num_heads,
@@ -1106,7 +1109,7 @@ class LongformerSelfAttention(nn.Module):
         )
 
         # global attn output
-        global_attn_output = torch.bmm(global_attn_probs, global_value_vectors)
+        global_attn_output = bmm_func(global_attn_probs, global_value_vectors)
 
         assert list(global_attn_output.size()) == [
             batch_size * self.num_heads,
@@ -1175,7 +1178,8 @@ class LongformerAttention(nn.Module):
         is_global_attn=None,
         output_attentions=False,
         einsum_func=None,
-        matmul_func=None
+        matmul_func=None,
+        bmm_func=None
     ):
         self_outputs = self.self(
             hidden_states,
@@ -1186,7 +1190,8 @@ class LongformerAttention(nn.Module):
             is_global_attn=is_global_attn,
             output_attentions=output_attentions,
             einsum_func=einsum_func,
-            matmul_func=matmul_func
+            matmul_func=matmul_func,
+            bmm_func=bmm_func
         )
         attn_output = self.output(self_outputs[0], hidden_states)
         outputs = (attn_output,) + self_outputs[1:]
@@ -1244,6 +1249,7 @@ class LongformerLayer(nn.Module):
         output_attentions=False,
         einsum_func=None,
         matmul_func=None,
+        bmm_func=None
     ):
         self_attn_outputs = self.attention(
             hidden_states,
@@ -1254,7 +1260,8 @@ class LongformerLayer(nn.Module):
             is_global_attn=is_global_attn,
             output_attentions=output_attentions,
             einsum_func=einsum_func,
-            matmul_func=matmul_func
+            matmul_func=matmul_func,
+            bmm_func=bmm_func
         )
         attn_output = self_attn_outputs[0]
         outputs = self_attn_outputs[1:]
@@ -1289,6 +1296,7 @@ class LongformerEncoder(nn.Module):
         return_dict=True,
         einsum_func=None,
         matmul_func=None,
+        bmm_func=None
     ):
         is_index_masked = attention_mask < 0
         is_index_global_attn = attention_mask > 0
@@ -1321,6 +1329,7 @@ class LongformerEncoder(nn.Module):
                     output_attentions,
                     einsum_func,
                     matmul_func,
+                    bmm_func
                 )
             else:
                 layer_outputs = layer_module(
@@ -1333,6 +1342,7 @@ class LongformerEncoder(nn.Module):
                     output_attentions=output_attentions,
                     einsum_func=einsum_func,
                     matmul_func=matmul_func,
+                    bmm_func=bmm_func
                 )
             hidden_states = layer_outputs[0]
 
@@ -1661,6 +1671,7 @@ class LongformerModel(LongformerPreTrainedModel):
         return_dict: Optional[bool] = None,
         einsum_func = None,
         matmul_func = None,
+        bmm_func = None
     ) -> Union[Tuple, LongformerBaseModelOutputWithPooling]:
         r"""
 
@@ -1757,6 +1768,7 @@ class LongformerModel(LongformerPreTrainedModel):
             return_dict=return_dict,
             einsum_func=einsum_func,
             matmul_func=matmul_func,
+            bmm_func=bmm_func
         )
         sequence_output = encoder_outputs[0]
         pooled_output = self.pooler(sequence_output) if self.pooler is not None else None

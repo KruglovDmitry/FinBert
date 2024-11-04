@@ -70,31 +70,18 @@ seq_encoder = MLMCPCPretrainModule(
     log_logits=False,
     encode_seq=True,)
 
-model = seq_encoder
+model = Model(seq_encoder, 
+              Head(
+                input_size=64,
+                hidden_layers_sizes=[32, 8],
+                drop_probs=[0.1, 0],
+                use_batch_norm=True,
+                objective='classification',
+                num_classes=2,
+                ),
+              torch.nn.NLLLoss())
 
-# model = Model(seq_encoder, 
-#               Head(
-#                 input_size=64,
-#                 hidden_layers_sizes=[32, 8],
-#                 drop_probs=[0.1, 0],
-#                 use_batch_norm=True,
-#                 objective='classification',
-#                 num_classes=2,
-#                 ),
-#               torch.nn.NLLLoss())
-
-# logger = pl.loggers.TensorBoardLogger(
-#     save_dir='.',
-#     name='lightning_logs',
-#     version='_16_heads_2_layers_no_dropout_at_all_no_norm_emb_drop_0.3_PBDrop_0.2_no_transf_norm_drop_in_head_0.1')
-
-# checkpoint_callback = pl.callbacks.ModelCheckpoint(
-#     dirpath="./ckpts/_16_heads_2_layers_no_dropout_at_all_no_norm_emb_drop_0.3_PBDrop_0.2_no_transf_norm_drop_in_head_0.1/", 
-#     save_top_k=40, 
-#     mode='max', 
-#     monitor="valid/MulticlassAUROC")
-
-TOTAL_EPOCHS = 1
+TOTAL_EPOCHS = 2
 MAX_ITERS = 3000 # Total 3000000 uniqe id
 EVAL_INTERVAL = 200
 
@@ -112,19 +99,20 @@ for epoch in range(TOTAL_EPOCHS):
     
     for iter, batch in enumerate(train_dl):
         xb, yb = batch[0], batch[1] 
-        pred, loss = model(xb, yb, torch.einsum, torch.matmul)
+        pred, loss = model(xb, yb, torch.einsum, torch.matmul, torch.bmm)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
         
         if iter % EVAL_INTERVAL == 0 or iter == MAX_ITERS - 1:
-            loss_train, acc_train = eval_model(model,
-                                               xb, yb, 
-                                               torch.einsum, 
-                                               torch.matmul, 
-                                               CrossEntropyLoss(), 
-                                               torchmetrics.AUROC(task="multiclass", num_classes=2), 
-                                               torchmetrics.Accuracy(task="multiclass", num_classes=2))
+            loss_train, acc_train, roc_auc_train= eval_model(model,
+                                                    xb, yb, 
+                                                    torch.einsum, 
+                                                    torch.matmul, 
+                                                    torch.bmm,
+                                                    torch.nn.NLLLoss(),
+                                                    torchmetrics.AUROC(task="multiclass", num_classes=2), 
+                                                    torchmetrics.Accuracy(task="multiclass", num_classes=2))
             
             iters.append(epoch * MAX_ITERS + iter)
             loss_arr.append(loss_train.item())
@@ -165,7 +153,8 @@ for i in range(6):
                                        xb_val, yb_val, 
                                        ff.einsum_with_noise, 
                                        ff.matmul_with_noise, 
-                                       CrossEntropyLoss(), 
+                                       ff.bmm_with_noise,
+                                       torch.nn.NLLLoss(),
                                        torchmetrics.AUROC(task="multiclass", num_classes=2), 
                                        torchmetrics.Accuracy(task="multiclass", num_classes=2))
         
@@ -179,41 +168,7 @@ for i in range(6):
     loss_arr.append(statistics.mean(loss_val_arr))
     accuracy_arr.append(statistics.mean(acc_val_arr))
     #roc_auc_arr.append(statistics.mean(roc_auc_val_arr))
-    
-    # downstream_model = SequenceToTarget(
-    #     seq_encoder=seq_encoder,
-    #     head=Head(
-    #         input_size=64,
-    #         hidden_layers_sizes=[32, 8],
-    #         drop_probs=[0.1, 0],
-    #         use_batch_norm=True,
-    #         objective='classification',
-    #         num_classes=2,
-    #     ),
-    #     loss=torch.nn.NLLLoss(),
-    #     metric_list=[torchmetrics.AUROC(task="multiclass", num_classes=2), torchmetrics.Accuracy(task="multiclass", num_classes=2)],
-    #     pretrained_lr=0.001,
-    #     optimizer_partial=partial(torch.optim.Adam, lr=0.001),
-    #     lr_scheduler_partial=partial(torch.optim.lr_scheduler.StepLR, step_size=2000, gamma=1),)
-
-    # trainer = pl.Trainer(
-    #     max_epochs=MAX_EPOCHS, 
-    #     accelerator="auto", 
-    #     enable_progress_bar=True, 
-    #     limit_train_batches=LIMIT_TRAIN_BATCHES,
-    #     limit_val_batches=LIMIT_VAL_BATCHES, 
-    #     callbacks=[checkpoint_callback],
-    #     logger=logger)
-    
-    # print(f'logger.version = {trainer.logger.version}')
-    # trainer.fit(downstream_model, finetune_dm)
-    
-    # print(trainer.logged_metrics)
-    # loss_arr.append(trainer.logged_metrics['loss'].item())
-    # roc_auc_arr.append(trainer.logged_metrics['valid/MulticlassAUROC'].item())
-    # accuracy_arr.append(trainer.logged_metrics['valid/MulticlassAccuracy'].item())
-    # noise_arr.append(noise_percent)
- 
+     
 plt.plot(noise_arr, loss_arr, color='y', label='Loss') 
 plt.plot(noise_arr, accuracy_arr, color='r', label='Accuracy')
 #plt.plot(noise_arr, roc_auc_arr, color='g', label='ROC_AUC')
