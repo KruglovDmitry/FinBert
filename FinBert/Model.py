@@ -1,8 +1,9 @@
 import numpy as np
-
+import matplotlib.pyplot as plt
 import torch
 import pytorch_lightning as pl
 from omegaconf import DictConfig
+from torchmetrics.classification import accuracy
 from transformers import LongformerConfig
 from Longformer import LongformerModel
 
@@ -320,6 +321,10 @@ class Model(pl.LightningModule):
         self.seq_encoder = seq_encoder
         self.head = head
         self.loss = loss
+        self.internal_logger = { 
+            'train' : { 'iter':[], 'loss': [], 'accuracy':[], 'roc_auc': [] },
+            'val': { 'iter':[], 'loss': [], 'accuracy':[], 'roc_auc': [] }
+        }
 
     def forward(self, x, targets=None, einsum_func=None, matmul_func=None, bmm_func=None):
         x = self.seq_encoder(x, targets, einsum_func, matmul_func, bmm_func)
@@ -332,12 +337,42 @@ class Model(pl.LightningModule):
 
         return x, loss
 
+    def eval_model(self, y_h, y, loss_fn, accuraccy_fn, roc_auc_fn, type):
+        iter = 1 if not self.internal_logger[type]['iter'] else self.internal_logger[type]['iter'][-1] + 1
+        self.internal_logger[type]['iter'].append(iter)
+        
+        loss = loss_fn(y_h, y).item()
+        self.internal_logger[type]['loss'].append(loss)
+        
+        accuracy = accuraccy_fn(y_h, y).item()
+        self.internal_logger[type]['accuracy'].append(accuracy)
+        
+        roc_auc = roc_auc_fn(y_h, y).item()
+        self.internal_logger[type]['roc_auc'].append(roc_auc)
+        print(f"{type}.....Iteration - {iter}: loss - {loss:.4f}, accuracy - {accuracy:.4f}, roc_auc - {roc_auc:.4f}")
+
     def predict(self, x):
         pass
     
-def eval_model(model, x, labels, einsum_func, matmul_func, bmm_func, loss_func, accuraccy_func, roc_auc_func, ):
+def eval_model_inference(model, x, labels, einsum_func, matmul_func, bmm_func, loss_func, accuraccy_func, roc_auc_func, ):
     prediction, loss = model.forward(x, labels, einsum_func, matmul_func, bmm_func)
     loss = loss_func(prediction, labels)
     accuracy = accuraccy_func(prediction, labels)
     roc_auc = roc_auc_func(prediction, labels)
     return loss, accuracy, roc_auc
+
+def print_metric_graph(model, metric, type):
+    plt.plot(model.internal_logger[type]['iter'], model.internal_logger[type][metric], color='y', label=f'{metric}_{type}') 
+    plt.xlabel("Iteration") 
+    plt.ylabel("Magnitude") 
+    plt.title(metric)
+    plt.legend()
+    plt.grid()
+    plt.savefig(f"C:\\Users\\kruglovdy\\Desktop\\Finbert\\{metric}_{type}_rewrite.png")
+    #plt.show()
+    plt.clf()
+    
+def print_metrics(model):
+    for metric in ['loss', 'accuracy', 'roc_auc']:
+        for metric_type in ['train', 'val']:
+            print_metric_graph(model, metric, metric_type)

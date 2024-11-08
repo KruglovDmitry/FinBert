@@ -18,7 +18,7 @@ from ptls.data_load.iterable_processing import SeqLenFilter, FeatureFilter, ToTo
 from ptls.frames.supervised.seq_to_target_dataset import SeqToTargetIterableDataset
 from ptls.data_load import IterableChain
 from ptls.frames import PtlsDataModule
-from Model import MLMCPCPretrainModule, Model, eval_model
+from Model import MLMCPCPretrainModule, Model, eval_model_inference, print_metrics
 import matplotlib.pyplot as plt
 from MatMulWithNoise import FuncFactory
 
@@ -83,63 +83,46 @@ model = Model(seq_encoder,
 
 TOTAL_EPOCHS = 2
 MAX_ITERS = 3000 # Total 3000000 uniqe id
-EVAL_INTERVAL = 200
+EVAL_INTERVAL = 50
+EVAL_ITERS = 1
 
 train_dl = finetune_dm.train_dl(SeqToTargetIterableDataset(train_dataset, target_col_name='flag'))
 val_dl = finetune_dm.val_dl(SeqToTargetIterableDataset(valid_dataset, target_col_name='flag'))
 optimizer = torch.optim.AdamW(seq_encoder.parameters(), lr=0.001)
 
-iters = []
-loss_arr, accuracy_arr, roc_auc_arr = [], [], []
-
 # TRAIN LOOP
-for epoch in range(TOTAL_EPOCHS):
+for epoch in range(TOTAL_EPOCHS):  
+      
     
     print(f"Start epoch - {epoch}")
     
     for iter, batch in enumerate(train_dl):
         xb, yb = batch[0], batch[1] 
+        
         pred, loss = model(xb, yb, torch.einsum, torch.matmul, torch.bmm)
+        model.eval_model(pred, yb, torch.nn.NLLLoss(), torchmetrics.AUROC(task="multiclass", num_classes=2), torchmetrics.Accuracy(task="multiclass", num_classes=2), 'train')
+        
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
         
         if iter % EVAL_INTERVAL == 0 or iter == MAX_ITERS - 1:
-            loss_train, acc_train, roc_auc_train= eval_model(model,
-                                                    xb, yb, 
-                                                    torch.einsum, 
-                                                    torch.matmul, 
-                                                    torch.bmm,
-                                                    torch.nn.NLLLoss(),
-                                                    torchmetrics.AUROC(task="multiclass", num_classes=2), 
-                                                    torchmetrics.Accuracy(task="multiclass", num_classes=2))
+            for iter_val, batch in enumerate(val_dl):
+                xb_val, yb_val = batch[0], batch[1]
+                pred, loss = model(xb_val, yb_val, torch.einsum, torch.matmul, torch.bmm)
+                model.eval_model(pred, yb_val, torch.nn.NLLLoss(), torchmetrics.AUROC(task="multiclass", num_classes=2), torchmetrics.Accuracy(task="multiclass", num_classes=2), 'val')
             
-            iters.append(epoch * MAX_ITERS + iter)
-            loss_arr.append(loss_train.item())
-            accuracy_arr.append(acc_train)
-            #roc_auc_arr.append(roc_auc_train)
-            
-            print(f"Train epoch {epoch}, iteration {iter}: loss - {loss_train:.4f}, accuracy - {acc_train:.4f}") #, roc_auc - {roc_auc_train:.4f}")
+                if iter_val >= EVAL_ITERS:
+                    break
 
         if iter >= MAX_ITERS:
             break
     
-plt.plot(iters, loss_arr, color='y', label='Loss') 
-plt.plot(iters, accuracy_arr, color='r', label='Accuracy')
-#plt.plot(iters, roc_auc_arr, color='g', label='ROC_AUC')
-
-plt.xlabel("Epoch") 
-plt.ylabel("Magnitude") 
-plt.title("Education")
-plt.legend()
-plt.grid()
-plt.savefig(f"C:\\Users\\kruglovdy\\Desktop\\Finbert\\Education.png")
-plt.show()
-
-noise_arr = []
-loss_arr, accuracy_arr, roc_auc_arr = [], [], []
+print_metrics(model)
         
 # EVALUATION LOOP
+
+noise_arr, loss_arr, accuracy_arr, roc_auc_arr = [], [], [], []
 for i in range(6):
  
     noise = 0.1*i
@@ -149,29 +132,28 @@ for i in range(6):
     for iter, batch in enumerate(val_dl):
         
         xb_val, yb_val = batch[0], batch[1]
-        loss_val, acc_val = eval_model(model, 
-                                       xb_val, yb_val, 
-                                       ff.einsum_with_noise, 
-                                       ff.matmul_with_noise, 
-                                       ff.bmm_with_noise,
-                                       torch.nn.NLLLoss(),
-                                       torchmetrics.AUROC(task="multiclass", num_classes=2), 
-                                       torchmetrics.Accuracy(task="multiclass", num_classes=2))
+        loss_val, acc_val, roc_auc_val = eval_model_inference(model, 
+                                                            xb_val, yb_val, 
+                                                            ff.einsum_with_noise, 
+                                                            ff.matmul_with_noise, 
+                                                            ff.bmm_with_noise,
+                                                            torch.nn.NLLLoss(),
+                                                            torchmetrics.AUROC(task="multiclass", num_classes=2), 
+                                                            torchmetrics.Accuracy(task="multiclass", num_classes=2))
         
         loss_val_arr.append(loss_val.item())
-        acc_val_arr.append(acc_val)
-        #roc_auc_val_arr.append(roc_auc_val.item())
-        
-        print(f"Validation step {iter}: loss - {loss_val:.4f}, accuracy - {acc_val:.4f}") #, roc_auc - {roc_auc_val:.4f}")
+        acc_val_arr.append(acc_val.item())
+        roc_auc_val_arr.append(roc_auc_val.item())
+        print(f"Validation step {iter}: loss - {loss_val:.4f}, accuracy - {acc_val:.4f}, roc_auc - {roc_auc_val:.4f}")
         
     noise_arr.append(noise)
     loss_arr.append(statistics.mean(loss_val_arr))
     accuracy_arr.append(statistics.mean(acc_val_arr))
-    #roc_auc_arr.append(statistics.mean(roc_auc_val_arr))
+    roc_auc_arr.append(statistics.mean(roc_auc_val_arr))
      
 plt.plot(noise_arr, loss_arr, color='y', label='Loss') 
 plt.plot(noise_arr, accuracy_arr, color='r', label='Accuracy')
-#plt.plot(noise_arr, roc_auc_arr, color='g', label='ROC_AUC')
+plt.plot(noise_arr, roc_auc_arr, color='g', label='ROC_AUC')
 
 plt.xlabel("Noise percent") 
 plt.ylabel("Magnitude") 
