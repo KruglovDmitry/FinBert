@@ -3,8 +3,8 @@ import numpy as np
 import torch
 import pytorch_lightning as pl
 from omegaconf import DictConfig
-from transformers import LongformerConfig
-from Longformer import LongformerModel
+from transformers import BertConfig
+from BERT import BertModel
 
 from ptls.data_load.padded_batch import PaddedBatch
 from torchmetrics import MeanMetric
@@ -97,8 +97,8 @@ class MLMCPCPretrainModule(pl.LightningModule):
         self.token_cls = torch.nn.Parameter(torch.randn(1, 1, hidden_size), requires_grad=True)
         self.token_mask = torch.nn.Parameter(torch.randn(1, 1, hidden_size), requires_grad=True)
 
-        self.transf = LongformerModel(
-            config=LongformerConfig(
+        self.transf = BertModel(
+            config=BertConfig(
                 hidden_size=hidden_size,
                 num_attention_heads=num_attention_heads,
                 intermediate_size=intermediate_size,

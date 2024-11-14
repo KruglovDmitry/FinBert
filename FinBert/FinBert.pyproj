@@ -21,6 +21,7 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="BERT.py" />
     <Compile Include="FinBert.py" />
     <Compile Include="Longformer.py" />
     <Compile Include="MatMulWithNoise.py" />
