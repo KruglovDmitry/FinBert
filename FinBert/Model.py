@@ -110,7 +110,6 @@ class MLMCPCPretrainModule(pl.LightningModule):
                 attention_probs_dropout_prob=attention_probs_dropout_prob
             ),
             add_pooling_layer=False,
-            noise_percent=noise_percent,
         )
 
         self.cpc_head1 = ContrastivePredictionHead(embeds_dim=hidden_size)
@@ -202,7 +201,6 @@ class MLMCPCPretrainModule(pl.LightningModule):
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
             position_ids=position_ids,
-            global_attention_mask=global_attention_mask,
         ).last_hidden_state
 
         if self.hparams.norm_predict:
