@@ -64,13 +64,6 @@ checkpoint_callback = pl.callbacks.ModelCheckpoint(
     monitor="valid/MulticlassAUROC")
 
 MAX_EPOCHS = 10
-LIMIT_TRAIN_BATCHES = 10
-LIMIT_VAL_BATCHES = 1
-
-loss_arr = []
-accuracy_arr = []
-roc_auc_arr = []
-noise_arr = []
 
 seq_encoder = MLMCPCPretrainModule(
         trx_encoder=torch.nn.Sequential(
@@ -107,8 +100,8 @@ trainer = pl.Trainer(
     max_epochs=MAX_EPOCHS, 
     accelerator="auto", 
     enable_progress_bar=True, 
-    limit_train_batches=LIMIT_TRAIN_BATCHES,
-    limit_val_batches=LIMIT_VAL_BATCHES, 
+    #limit_train_batches=LIMIT_TRAIN_BATCHES,
+    #limit_val_batches=LIMIT_VAL_BATCHES, 
     callbacks=[checkpoint_callback],
     logger=logger)
     
@@ -117,14 +110,14 @@ trainer.fit(downstream_model, finetune_dm)
     
 print(trainer.logged_metrics)
 
-loss_arr.append(trainer.logged_metrics['loss'].item())
-roc_auc_arr.append(trainer.logged_metrics['valid/MulticlassAUROC'].item())
-accuracy_arr.append(trainer.logged_metrics['valid/MulticlassAccuracy'].item())
+#loss_arr.append(trainer.logged_metrics['loss'].item())
+#roc_auc_arr.append(trainer.logged_metrics['valid/MulticlassAUROC'].item())
+#accuracy_arr.append(trainer.logged_metrics['valid/MulticlassAccuracy'].item())
 #noise_arr.append(noise_percent)
  
-plt.plot(noise_arr, loss_arr, color='y', label='Loss') 
-plt.plot(noise_arr, roc_auc_arr, color='g', label='ROC_AUC')
-plt.plot(noise_arr, accuracy_arr, color='r', label='Accuracy')
+#plt.plot(noise_arr, loss_arr, color='y', label='Loss') 
+#plt.plot(noise_arr, roc_auc_arr, color='g', label='ROC_AUC')
+#plt.plot(noise_arr, accuracy_arr, color='r', label='Accuracy')
 
 # plt.xlabel("Noise percent") 
 # plt.ylabel("Magnitude") 

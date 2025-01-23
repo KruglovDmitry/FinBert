@@ -302,6 +302,7 @@ class BertSelfAttention(nn.Module):
             past_key_value = (key_layer, value_layer)
 
         # Take the dot product between "query" and "key" to get the raw attention scores.
+        # attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
         attention_scores = matmul_with_noise(query_layer, key_layer.transpose(-1, -2))
 
         if self.position_embedding_type == "relative_key" or self.position_embedding_type == "relative_key_query":
@@ -319,11 +320,14 @@ class BertSelfAttention(nn.Module):
             positional_embedding = positional_embedding.to(dtype=query_layer.dtype)  # fp16 compatibility
 
             if self.position_embedding_type == "relative_key":
+                # relative_position_scores = torch.einsum("bhld,lrd->bhlr", query_layer, positional_embedding)
                 relative_position_scores = einsum_with_noise("bhld,lrd->bhlr", query_layer, positional_embedding)
                 attention_scores = attention_scores + relative_position_scores
             elif self.position_embedding_type == "relative_key_query":
-                relative_position_scores_query = einsum_with_noise("bhld,lrd->bhlr", query_layer, positional_embedding)
-                relative_position_scores_key = einsum_with_noise("bhrd,lrd->bhlr", key_layer, positional_embedding)
+                # relative_position_scores_query = torch.einsum("bhld,lrd->bhlr", query_layer, positional_embedding)
+                # relative_position_scores_key = torch.einsum("bhrd,lrd->bhlr", key_layer, positional_embedding)
+                relative_position_scores_query = einsum_with_noise("bhld,lrd->bhlr", query_layer, positional_embedding) # torch.einsum("bhld,lrd->bhlr", query_layer, positional_embedding)
+                relative_position_scores_key = einsum_with_noise("bhrd,lrd->bhlr", key_layer, positional_embedding) # torch.einsum("bhrd,lrd->bhlr", key_layer, positional_embedding)
                 attention_scores = attention_scores + relative_position_scores_query + relative_position_scores_key
 
         attention_scores = attention_scores / math.sqrt(self.attention_head_size)
@@ -342,6 +346,7 @@ class BertSelfAttention(nn.Module):
         if head_mask is not None:
             attention_probs = attention_probs * head_mask
 
+        #context_layer = torch.matmul(attention_probs, value_layer)
         context_layer = matmul_with_noise(attention_probs, value_layer)
 
         context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
@@ -438,7 +443,8 @@ class BertSdpaSelfAttention(BertSelfAttention):
             True if self.is_decoder and not is_cross_attention and attention_mask is None and tgt_len > 1 else False
         )
 
-        attn_output = torch.nn.functional.scaled_dot_product_attention(
+        # attn_output = torch.nn.functional.scaled_dot_product_attention(
+        attn_output = scaled_dot_product_attention(
             query_layer,
             key_layer,
             value_layer,
@@ -1996,4 +2002,31 @@ class BertForQuestionAnswering(BertPreTrainedModel):
             attentions=outputs.attentions,
         )
 
+def scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=0.0,
+                is_causal=False, scale=None, enable_gqa=False) -> torch.Tensor:
+    L, S = query.size(-2), key.size(-2)
+    scale_factor = 1 / math.sqrt(query.size(-1)) if scale is None else scale
+    attn_bias = torch.zeros(L, S, dtype=query.dtype, device=query.device)
+    if is_causal:
+        assert attn_mask is None
+        temp_mask = torch.ones(L, S, dtype=torch.bool).tril(diagonal=0)
+        attn_bias.masked_fill_(temp_mask.logical_not(), float("-inf"))
+        attn_bias.to(query.dtype)
 
+    if attn_mask is not None:
+        if attn_mask.dtype == torch.bool:
+            attn_bias.masked_fill_(attn_mask.logical_not(), float("-inf"))
+        else:
+            attn_bias = attn_mask + attn_bias
+
+    if enable_gqa:
+        key = key.repeat_interleave(query.size(-3)//key.size(-3), -3)
+        value = value.repeat_interleave(query.size(-3)//value.size(-3), -3)
+    
+    temp =  key.transpose(-2, -1)
+    attn_weight = query @ key.transpose(-2, -1) * scale_factor
+    attn_weight += attn_bias
+    attn_weight = torch.softmax(attn_weight, dim=-1)
+    attn_weight = torch.dropout(attn_weight, dropout_p, train=True)
+    result = attn_weight @ value
+    return result
