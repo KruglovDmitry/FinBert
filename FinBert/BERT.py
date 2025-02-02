@@ -56,8 +56,6 @@ from transformers.utils import (
     replace_return_docstrings,
 )
 from transformers import BertConfig
-from MatMulWithNoise import matmul_with_noise, einsum_with_noise
-
 
 logger = logging.get_logger(__name__)
 
@@ -361,10 +359,11 @@ class BertSelfAttention(nn.Module):
 
 
 class BertSdpaSelfAttention(BertSelfAttention):
-    def __init__(self, config, position_embedding_type=None):
+    def __init__(self, config, position_embedding_type=None, enable_optica=False):
         super().__init__(config, position_embedding_type=position_embedding_type)
         self.dropout_prob = config.attention_probs_dropout_prob
         self.require_contiguous_qkv = version.parse(get_torch_version()) < version.parse("2.2.0")
+        self.enable_optica = enable_optica
 
     # Adapted from BertSelfAttention
     def forward(
@@ -451,6 +450,7 @@ class BertSdpaSelfAttention(BertSelfAttention):
             attn_mask=attention_mask,
             dropout_p=self.dropout_prob if self.training else 0.0,
             is_causal=is_causal,
+            enable_opita=self.enable_optica
         )
 
         attn_output = attn_output.transpose(1, 2)
@@ -483,10 +483,10 @@ BERT_SELF_ATTENTION_CLASSES = {
 
 
 class BertAttention(nn.Module):
-    def __init__(self, config, position_embedding_type=None):
+    def __init__(self, config, position_embedding_type=None, enable_optica=False):
         super().__init__()
         self.self = BERT_SELF_ATTENTION_CLASSES[config._attn_implementation](
-            config, position_embedding_type=position_embedding_type
+            config, position_embedding_type=position_embedding_type, enable_optica=enable_optica
         )
         self.output = BertSelfOutput(config)
         self.pruned_heads = set()
@@ -563,11 +563,11 @@ class BertOutput(nn.Module):
 
 
 class BertLayer(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, enable_optica=False):
         super().__init__()
         self.chunk_size_feed_forward = config.chunk_size_feed_forward
         self.seq_len_dim = 1
-        self.attention = BertAttention(config)
+        self.attention = BertAttention(config, enable_optica=enable_optica)
         self.is_decoder = config.is_decoder
         self.add_cross_attention = config.add_cross_attention
         if self.add_cross_attention:
@@ -649,10 +649,10 @@ class BertLayer(nn.Module):
 
 
 class BertEncoder(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, enable_optica=False):
         super().__init__()
         self.config = config
-        self.layer = nn.ModuleList([BertLayer(config) for _ in range(config.num_hidden_layers)])
+        self.layer = nn.ModuleList([BertLayer(config, enable_optica=enable_optica) for _ in range(config.num_hidden_layers)])
         self.gradient_checkpointing = False
 
     def forward(
@@ -976,12 +976,12 @@ class BertModel(BertPreTrainedModel):
 
     _no_split_modules = ["BertEmbeddings", "BertLayer"]
 
-    def __init__(self, config, add_pooling_layer=True):
+    def __init__(self, config, add_pooling_layer=True, enable_optica=False):
         super().__init__(config)
         self.config = config
 
         self.embeddings = BertEmbeddings(config)
-        self.encoder = BertEncoder(config)
+        self.encoder = BertEncoder(config, enable_optica=enable_optica)
 
         self.pooler = BertPooler(config) if add_pooling_layer else None
 
@@ -2003,7 +2003,7 @@ class BertForQuestionAnswering(BertPreTrainedModel):
         )
 
 def scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=0.0,
-                is_causal=False, scale=None, enable_gqa=False) -> torch.Tensor:
+                is_causal=False, scale=None, enable_gqa=False, enable_opita=False) -> torch.Tensor:
     L, S = query.size(-2), key.size(-2)
     scale_factor = 1 / math.sqrt(query.size(-1)) if scale is None else scale
     attn_bias = torch.zeros(L, S, dtype=query.dtype, device=query.device)
@@ -2023,10 +2023,12 @@ def scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=0.
         key = key.repeat_interleave(query.size(-3)//key.size(-3), -3)
         value = value.repeat_interleave(query.size(-3)//value.size(-3), -3)
     
-    temp =  key.transpose(-2, -1)
-    attn_weight = query @ key.transpose(-2, -1) * scale_factor
+    attn_weight = query @ key.transpose(-2, -1) * scale_factor if enable_opita == False else optica_matmul(query, key.transpose(-2, -1)) * scale_factor
     attn_weight += attn_bias
     attn_weight = torch.softmax(attn_weight, dim=-1)
     attn_weight = torch.dropout(attn_weight, dropout_p, train=True)
-    result = attn_weight @ value
+    result = attn_weight @ value if enable_opita == False else optica_matmul(attn_weight, value)
     return result
+
+def optica_matmul(tensor_1: torch.Tensor, tensor_2: torch.Tensor) -> torch.Tensor:
+    pass

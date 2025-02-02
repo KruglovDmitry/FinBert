@@ -1,33 +1,24 @@
 import numpy as np
 
 import torch
+import torchmetrics
 import pytorch_lightning as pl
 from omegaconf import DictConfig
+from torchmetrics.classification import accuracy
 from transformers import BertConfig
 from BERT import BertModel
 
+from functools import partial
+from ptls.nn import Head
 from ptls.data_load.padded_batch import PaddedBatch
 from torchmetrics import MeanMetric
 from ptls.frames.bert.losses.query_soft_max import QuerySoftmaxLoss
 from torch.nn import BCELoss
 from torchmetrics import MetricCollection
 
-class ContrastivePredictionHead(torch.nn.Module):
-
-    def __init__(self, embeds_dim, drop_p=0.1):
-
-        super().__init__()
-        self.head = torch.nn.Sequential(
-            torch.nn.Linear(embeds_dim, embeds_dim, bias=True)
-        )
-
-    def forward(self, x):
-        return self.head(x)
-
-
-class MLMCPCPretrainModule(pl.LightningModule):
+class PretrainModule(pl.LightningModule):
     def __init__(self,
-                 trx_encoder: torch.nn.Module,
+                 encoder: torch.nn.Module,
                  hidden_size: int,
                  loss_temperature: float,
                  total_steps: int,
@@ -45,18 +36,16 @@ class MLMCPCPretrainModule(pl.LightningModule):
                  replace_proba: float = 0.1,
                  neg_count: int = 1,
                  log_logits: bool = False,
-                 weight_mlm: float = 0.5,
-                 weight_cpc: float = 0.5,
                  encode_seq = False,
-                 noise_percent = 0):
+                 enable_optica=False):
         """
 
         Parameters
         ----------
-        trx_encoder:
+        encoder:
             Module for transform dict with feature sequences to sequence of transaction representations
         hidden_size:
-            Output size of `trx_encoder`. Hidden size of internal transformer representation
+            Output size of `encoder`. Hidden size of internal transformer representation
         loss_temperature:
              temperature parameter of `QuerySoftmaxLoss`
         total_steps:
@@ -90,13 +79,21 @@ class MLMCPCPretrainModule(pl.LightningModule):
         """
 
         super().__init__()
-        self.save_hyperparameters(logger=False)
-
-        self.trx_encoder = trx_encoder
-
+        self.save_hyperparameters(ignore=['encoder', 'head', 'loss', 'metric_list', 'optimizer_partial', 'lr_scheduler_partial'], logger=False)
+        
+        self.loss = torch.nn.NLLLoss()
+        
+        self.accuracy = torchmetrics.Accuracy(task="multiclass", num_classes=2)
+        self.roc_auc = torchmetrics.AUROC(task="multiclass", num_classes=2)
+        
+        self.optimizer_partial = partial(torch.optim.Adam, lr=0.001),
+        self.lr_scheduler_partial = partial(torch.optim.lr_scheduler.StepLR, step_size=2000, gamma=1)
+        
         self.token_cls = torch.nn.Parameter(torch.randn(1, 1, hidden_size), requires_grad=True)
         self.token_mask = torch.nn.Parameter(torch.randn(1, 1, hidden_size), requires_grad=True)
-
+        
+        self.encoder = encoder
+        
         self.transf = BertModel(
             config=BertConfig(
                 hidden_size=hidden_size,
@@ -110,24 +107,17 @@ class MLMCPCPretrainModule(pl.LightningModule):
                 attention_probs_dropout_prob=attention_probs_dropout_prob
             ),
             add_pooling_layer=False,
+            enable_optica=enable_optica,
         )
 
-        self.cpc_head1 = ContrastivePredictionHead(embeds_dim=hidden_size)
-        self.cpc_head2 = ContrastivePredictionHead(embeds_dim=hidden_size)
-
-        self.mlm_loss = QuerySoftmaxLoss(temperature=loss_temperature, reduce=False)
-        self.cpc_loss = QuerySoftmaxLoss(temperature=loss_temperature, reduce=False)
-
-        self.weight_mlm = weight_mlm
-        self.weight_cpc = weight_cpc
-
-        self.train_mlm_loss = MeanMetric()
-        self.valid_mlm_loss = MeanMetric()
-
-        self.train_cpc_loss = MeanMetric()
-        self.valid_cpc_loss = MeanMetric()
-
-        self.encode_seq = encode_seq
+        self.head = Head(
+            input_size=64,
+            hidden_layers_sizes=[32, 8],
+            drop_probs=[0.1, 0],
+            use_batch_norm=True,
+            objective='classification',
+            num_classes=2,
+        )
 
     def configure_optimizers(self):
         optim = torch.optim.Adam(self.parameters(),
@@ -148,29 +138,8 @@ class MLMCPCPretrainModule(pl.LightningModule):
         scheduler = {'scheduler': scheduler, 'interval': 'step'}
         return [optim], [scheduler]
 
-    def get_mask(self, attention_mask):
-        return torch.bernoulli(attention_mask.float() * self.hparams.replace_proba).bool()
-
-    def mask_x(self, x, attention_mask, mask):
-        shuffled_tokens = x[attention_mask.bool()]
-        B, T, H = x.size()
-        ix = torch.multinomial(torch.ones(shuffled_tokens.size(0)), B * T, replacement=True)
-        shuffled_tokens = shuffled_tokens[ix].view(B, T, H)
-
-        rand = torch.rand(B, T, device=x.device).unsqueeze(2).expand(B, T, H)
-        replace_to = torch.where(
-            rand < 0.8,
-            self.token_mask.expand_as(x),  # [MASK] token 80%
-            torch.where(
-                rand < 0.9,
-                shuffled_tokens,  # random token 90%
-                x,  # unchanged 10%
-            )
-        )
-        return torch.where(mask.bool().unsqueeze(2).expand_as(x), replace_to, x)
-
     def forward(self, z: PaddedBatch):
-        z = self.trx_encoder(z)
+        z = self.encoder(z)
 
         B, T, H = z.payload.size()
         device = z.payload.device
@@ -205,103 +174,46 @@ class MLMCPCPretrainModule(pl.LightningModule):
 
         if self.hparams.norm_predict:
             out = out / (out.pow(2).sum(dim=-1, keepdim=True) + 1e-9).pow(0.5)
-
-        # CPC Predictions
-        cpc_preds1 = self.cpc_head1.forward(out[:, 0])
-        cpc_preds2 = self.cpc_head2.forward(out[:, 0])
-
-        if self.encode_seq:
-            return out[:, 0]
-        else:
-            return PaddedBatch(out[:, 1:], z.seq_lens), [cpc_preds1, cpc_preds2]
-
-    def get_neg_ix(self, mask):
-        """Sample from predicts, where `mask == True`, without self element.
-        sample from predicted tokens from batch
-        """
-        mask_num = mask.int().sum()
-        mn = 1 - torch.eye(mask_num, device=mask.device)
-        neg_ix = torch.multinomial(mn, max(1, int(mn.shape[-1]*0.09)))  # self.hparams.neg_count
-
-        b_ix = torch.arange(mask.size(0), device=mask.device).view(-1, 1).expand_as(mask)[mask][neg_ix]
-        t_ix = torch.arange(mask.size(1), device=mask.device).view(1, -1).expand_as(mask)[mask][neg_ix]
-        return b_ix, t_ix
-
-    def loss_mlm_cpc(self, x: PaddedBatch, y: PaddedBatch, is_train_step):
-
-        mask = self.get_mask(x.seq_len_mask)
-        masked_x = self.mask_x(x.payload, x.seq_len_mask, mask)
-        out, preds  = self.forward(PaddedBatch(masked_x, x.seq_lens))
-
-        # MlM Part (Masked Language Model)
-        out = out.payload
-        mask = mask
-        target = x.payload[mask].unsqueeze(1)  # N, 1, H
-        predict = out[mask].unsqueeze(1)  # N, 1, H
-        neg_ix = self.get_neg_ix(mask)
-        negative = out[neg_ix[0], neg_ix[1]]  # N, nneg, H
-        loss_mlm = self.mlm_loss(target, predict, negative)
-
-        if is_train_step and self.hparams.log_logits:
-            with torch.no_grad():
-                logits = self.mlm_loss.get_logits(target, predict, negative)
-            self.logger.experiment.add_histogram('mlm/logits',
-                                                 logits.flatten().detach(), self.global_step)
-
-
-        # CPC Part (Contrastive Predictive Coding)
-        targets, predicts, negatives = [], [], []
-        for i in range(2):
-            target = y.payload[:, i].unsqueeze(1)  # B, 1, H
-            predict = preds[i].unsqueeze(1)  # B, 1, H
-
-            # Sample negatives along batch_size dimension
-            batch_size = predict.size(0)
-            mn = 1 - torch.eye(batch_size, device=target.device)
-            neg_ix = torch.multinomial(mn, max(1, int(mn.shape[-1]*0.07)))  # self.hparams.neg_count
-            negative = preds[i][neg_ix, :]  # B, nneg, H
-            targets.append(target)
-            predicts.append(predict)
-            negatives.append(negative)
-
-        targets = torch.concat(targets, dim=0)
-        predicts = torch.concat(predicts, dim=0)
-        negatives = torch.concat(negatives, dim=0)
-
-        # Feed contrastive loss with negatives
-        loss_cpc = self.cpc_loss(targets, predicts, negatives)
-
-        return loss_mlm, loss_cpc
+        
+        out_head = self.head(out[:, 0])
+        
+        return out_head
 
     def training_step(self, batch, batch_idx):
-        x_trx, y_trx = batch
+        x, y = batch
+        y_hat = self(x)
+        
+        loss = self.loss(y_hat, y)
+        accuracy = self.accuracy(y_hat, y)
+        roc_auc = self.roc_auc(y_hat, y)
 
-        z_trx = self.trx_encoder(x_trx)  # PB: B, T, H
-        y_trx = self.trx_encoder(y_trx)  #     B, 3, H
-        loss_mlm, loss_cpc = self.loss_mlm_cpc(z_trx, y_trx, is_train_step=True)
-        self.train_mlm_loss(loss_mlm)
-        self.train_cpc_loss(loss_cpc)
-        loss_mlm = loss_mlm.mean()
-        loss_cpc = loss_cpc.mean()
-        self.log(f'mlm/loss', loss_mlm)
-        self.log(f'cpc/loss', loss_cpc)
-        loss = self.weight_cpc*loss_cpc + self.weight_mlm*loss_mlm
+        self.log('train_loss', loss) 
+        self.log('train_accuracy', accuracy)
+        self.log('train_roc_auc', roc_auc)
+        
         return loss
 
     def validation_step(self, batch, batch_idx):
-        x_trx, y_trx = batch
-        z_trx = self.trx_encoder(x_trx)  # PB: B, T, H
-        y_trx = self.trx_encoder(y_trx)
-        loss_mlm, loss_cpc = self.loss_mlm_cpc(z_trx, y_trx, is_train_step=False)
-        self.valid_cpc_loss(loss_cpc)
-        self.valid_mlm_loss(loss_mlm)
-
-    def on_training_epoch_end(self, _):
-        self.log(f'mlm/train_mlm_loss', self.train_mlm_loss, prog_bar=False)
-        self.log(f'cpc/train_cpc_loss', self.train_cpc_loss, prog_bar=False)
-
-    def on_validation_epoch_end(self, _):
-        self.log(f'mlm/valid_mlm_loss', self.valid_mlm_loss, prog_bar=False)
-        self.log(f'cpc/valid_cpc_loss', self.valid_cpc_loss, prog_bar=False)
-
+        x, y = batch
+        y_hat = self(x)
+        
+        loss = self.loss(y_hat, y)
+        accuracy = self.accuracy(y_hat, y)
+        roc_auc = self.roc_auc(y_hat, y)
+        
+        self.log('val_loss', loss) 
+        self.log('val_accuracy', accuracy)
+        self.log('val_roc_auc', roc_auc)
+    
+    def test_step(self, batch, batch_idx):
+        x, y = batch
+        y_hat = self(x)
+        
+        loss = self.loss(y_hat, y)
+        accuracy = self.accuracy(y_hat, y)
+        roc_auc = self.roc_auc(y_hat, y)
+        
+        self.log('test_loss', loss) 
+        self.log('test_accuracy', accuracy)
+        self.log('test_roc_auc', roc_auc)
 
