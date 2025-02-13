@@ -5,8 +5,10 @@ import torchmetrics
 import pytorch_lightning as pl
 from omegaconf import DictConfig
 from torchmetrics.classification import accuracy
-from transformers import BertConfig
-from BERT import BertModel
+from torchmetrics.classification import BinaryROC
+from transformers import LlamaConfig 
+from Llama import LlamaForSequenceClassification
+from ptls.nn import TrxEncoder, PBLinear, PBL2Norm, PBLayerNorm, PBDropout
 
 from functools import partial
 from ptls.nn import Head
@@ -18,71 +20,30 @@ from torchmetrics import MetricCollection
 
 class PretrainModule(pl.LightningModule):
     def __init__(self,
-                 encoder: torch.nn.Module,
-                 hidden_size: int,
-                 loss_temperature: float,
+                 trx_encoder: torch.nn.Module,
                  total_steps: int,
                  max_lr: float = 0.001,
                  weight_decay: float = 0.0,
                  pct_start: float = 0.1,
-                 norm_predict: bool = False,
-                 num_attention_heads: int = 16,
-                 intermediate_size: int = 128,
-                 num_hidden_layers: int = 2,
-                 attention_window: int = 16,
-                 hidden_dropout_prob=0,
-                 attention_probs_dropout_prob=0,
+                 hidden_size: int = 64,
+                 intermediate_size: int = 1024,
+                 num_hidden_layers: int = 8,
+                 num_attention_heads: int = 8,
                  max_position_embeddings: int = 4000,
-                 replace_proba: float = 0.1,
-                 neg_count: int = 1,
-                 log_logits: bool = False,
-                 encode_seq = False,
-                 enable_optica=False):
-        """
-
-        Parameters
-        ----------
-        encoder:
-            Module for transform dict with feature sequences to sequence of transaction representations
-        hidden_size:
-            Output size of `encoder`. Hidden size of internal transformer representation
-        loss_temperature:
-             temperature parameter of `QuerySoftmaxLoss`
-        total_steps:
-            total_steps expected in OneCycle lr scheduler
-        max_lr:
-            max_lr of OneCycle lr scheduler
-        weight_decay:
-            weight_decay of Adam optimizer
-        pct_start:
-            % of total_steps when lr increase
-        norm_predict:
-            use l2 norm for transformer output or not
-        num_attention_heads:
-            parameter for Longformer
-        intermediate_size:
-            parameter for Longformer
-        num_hidden_layers:
-            parameter for Longformer
-        attention_window:
-            parameter for Longformer
-        max_position_embeddings:
-            parameter for Longformer
-        replace_proba:
-            probability of masking transaction embedding
-        neg_count:
-            negative count for `QuerySoftmaxLoss`
-        log_logits:
-            if true than logits histogram will be logged. May be useful for `loss_temperature` tuning
-        encode_seq:
-            if true then outputs zero element of transformer i.e. encodes whole sequence. Else returns all outputs of transformer except 0th.
-        """
+                 rms_norm_eps: float = 1e-6,
+                 initializer_range: float = 0.02,
+                 use_cache: bool = True,
+                 pad_token_id: int = 0,
+                 tie_word_embeddings: bool = False,
+                 enable_optica=False,):
 
         super().__init__()
         self.save_hyperparameters(ignore=['encoder', 'head', 'loss', 'metric_list', 'optimizer_partial', 'lr_scheduler_partial'], logger=False)
-        
+
         self.loss = torch.nn.NLLLoss()
-        
+        self.preds, self.target = None, None
+
+        self.roc_metric = BinaryROC()
         self.accuracy = torchmetrics.Accuracy(task="multiclass", num_classes=2)
         self.roc_auc = torchmetrics.AUROC(task="multiclass", num_classes=2)
         
@@ -92,32 +53,25 @@ class PretrainModule(pl.LightningModule):
         self.token_cls = torch.nn.Parameter(torch.randn(1, 1, hidden_size), requires_grad=True)
         self.token_mask = torch.nn.Parameter(torch.randn(1, 1, hidden_size), requires_grad=True)
         
-        self.encoder = encoder
+        self.encoder = torch.nn.Sequential(
+            trx_encoder,
+            PBLinear(trx_encoder.output_size, 64),
+            PBDropout(0.2))
         
-        self.transf = BertModel(
-            config=BertConfig(
+        self.transf = LlamaForSequenceClassification(
+            config=LlamaConfig(
+                #vocab_size=4,
                 hidden_size=hidden_size,
-                num_attention_heads=num_attention_heads,
                 intermediate_size=intermediate_size,
                 num_hidden_layers=num_hidden_layers,
-                vocab_size=4,
-                max_position_embeddings=self.hparams.max_position_embeddings,
-                attention_window=attention_window,
-                hidden_dropout_prob=hidden_dropout_prob,
-                attention_probs_dropout_prob=attention_probs_dropout_prob
-            ),
-            add_pooling_layer=False,
-            enable_optica=enable_optica,
-        )
-
-        self.head = Head(
-            input_size=64,
-            hidden_layers_sizes=[32, 8],
-            drop_probs=[0.1, 0],
-            use_batch_norm=True,
-            objective='classification',
-            num_classes=2,
-        )
+                num_attention_heads=num_attention_heads,
+                max_position_embeddings=max_position_embeddings,
+                rms_norm_eps=rms_norm_eps,
+                initializer_range=initializer_range,
+                use_cache=use_cache,
+                pad_token_id=pad_token_id,
+                tie_word_embeddings=tie_word_embeddings,),
+            enable_optica=enable_optica,)
 
     def configure_optimizers(self):
         optim = torch.optim.Adam(self.parameters(),
@@ -170,14 +124,9 @@ class PretrainModule(pl.LightningModule):
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
             position_ids=position_ids,
-        ).last_hidden_state
+        ).logits
 
-        if self.hparams.norm_predict:
-            out = out / (out.pow(2).sum(dim=-1, keepdim=True) + 1e-9).pow(0.5)
-        
-        out_head = self.head(out[:, 0])
-        
-        return out_head
+        return out
 
     def training_step(self, batch, batch_idx):
         x, y = batch
@@ -209,11 +158,12 @@ class PretrainModule(pl.LightningModule):
         x, y = batch
         y_hat = self(x)
         
-        loss = self.loss(y_hat, y)
-        accuracy = self.accuracy(y_hat, y)
-        roc_auc = self.roc_auc(y_hat, y)
-        
-        self.log('test_loss', loss) 
-        self.log('test_accuracy', accuracy)
-        self.log('test_roc_auc', roc_auc)
+        self.preds = y_hat if self.preds is None else torch.cat((self.preds, y_hat))
+        self.target = y if self.target is None else torch.cat((self.target, y))
+
+    def on_test_end(self):
+        print("ROC_AUC score - ", self.roc_auc(self.preds, self.target).item())
+        self.roc_metric.update(self.preds[:, 1], self.target)
+        fig_, ax_ = self.roc_metric.plot()
+        fig_.savefig('/wd/finbert/roc_curve_optic_fit.png')
 
