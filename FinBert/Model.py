@@ -7,7 +7,7 @@ from omegaconf import DictConfig
 from torchmetrics.classification import accuracy
 from torchmetrics.classification import BinaryROC
 from transformers import LlamaConfig 
-from Llama import LlamaForSequenceClassification
+from Llama import LlamaModel
 from ptls.nn import TrxEncoder, PBLinear, PBL2Norm, PBLayerNorm, PBDropout
 
 from functools import partial
@@ -26,14 +26,13 @@ class PretrainModule(pl.LightningModule):
                  weight_decay: float = 0.0,
                  pct_start: float = 0.1,
                  hidden_size: int = 64,
-                 intermediate_size: int = 1024,
-                 num_hidden_layers: int = 8,
-                 num_attention_heads: int = 8,
+                 intermediate_size: int = 128,
+                 num_hidden_layers: int = 2,
+                 num_attention_heads: int = 16,
                  max_position_embeddings: int = 4000,
                  rms_norm_eps: float = 1e-6,
                  initializer_range: float = 0.02,
                  use_cache: bool = True,
-                 pad_token_id: int = 0,
                  tie_word_embeddings: bool = False,
                  enable_optica=False,):
 
@@ -58,9 +57,9 @@ class PretrainModule(pl.LightningModule):
             PBLinear(trx_encoder.output_size, 64),
             PBDropout(0.2))
         
-        self.transf = LlamaForSequenceClassification(
+        self.transf = LlamaModel(
             config=LlamaConfig(
-                #vocab_size=4,
+                vocab_size=4,
                 hidden_size=hidden_size,
                 intermediate_size=intermediate_size,
                 num_hidden_layers=num_hidden_layers,
@@ -69,10 +68,18 @@ class PretrainModule(pl.LightningModule):
                 rms_norm_eps=rms_norm_eps,
                 initializer_range=initializer_range,
                 use_cache=use_cache,
-                pad_token_id=pad_token_id,
                 tie_word_embeddings=tie_word_embeddings,),
             enable_optica=enable_optica,)
 
+        self.head = Head(
+            input_size=64,
+            hidden_layers_sizes=[32, 8],
+            drop_probs=[0.1, 0],
+            use_batch_norm=True,
+            objective='classification',
+            num_classes=2,
+        )
+        
     def configure_optimizers(self):
         optim = torch.optim.Adam(self.parameters(),
                                  lr=self.hparams.max_lr,
@@ -124,9 +131,11 @@ class PretrainModule(pl.LightningModule):
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
             position_ids=position_ids,
-        ).logits
+        ).last_hidden_state
+        
+        out_head = self.head(out[:, 0])
 
-        return out
+        return out_head
 
     def training_step(self, batch, batch_idx):
         x, y = batch

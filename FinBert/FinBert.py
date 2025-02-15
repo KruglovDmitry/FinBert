@@ -45,7 +45,7 @@ checkpoint_callback = pl.callbacks.ModelCheckpoint(dirpath="./ckpts/BERT/", save
 
 max_epochs = 20
 
-trx_encoder_params = dict(embeddings_noise=0, numeric_values=numeric_values, embeddings=embeddings, emb_dropout=0.3, spatial_dropout=False)
+trx_encoder_params = dict(embeddings=embeddings, numeric_values=numeric_values, emb_dropout=0.3,)
 trx_encoder = TrxEncoder(**trx_encoder_params)
 
 model = PretrainModule(trx_encoder=trx_encoder,total_steps=1450*max_epochs)
