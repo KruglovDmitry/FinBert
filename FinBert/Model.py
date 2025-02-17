@@ -15,6 +15,7 @@ from torchmetrics import MeanMetric
 from ptls.frames.bert.losses.query_soft_max import QuerySoftmaxLoss
 from torch.nn import BCELoss
 from torchmetrics import MetricCollection
+from torchmetrics.classification import BinaryROC
 
 class PretrainModule(pl.LightningModule):
     def __init__(self,
@@ -80,11 +81,13 @@ class PretrainModule(pl.LightningModule):
 
         super().__init__()
         self.save_hyperparameters(ignore=['encoder', 'head', 'loss', 'metric_list', 'optimizer_partial', 'lr_scheduler_partial'], logger=False)
-        
-        self.loss = torch.nn.NLLLoss()
+        self.softmax = torch.nn.Softmax()
+        self.loss = torch.nn.BCELoss()
+        self.preds, self.target = None, None
         
         self.accuracy = torchmetrics.Accuracy(task="multiclass", num_classes=2)
         self.roc_auc = torchmetrics.AUROC(task="multiclass", num_classes=2)
+        self.roc_metric = BinaryROC()
         
         self.optimizer_partial = partial(torch.optim.Adam, lr=0.001),
         self.lr_scheduler_partial = partial(torch.optim.lr_scheduler.StepLR, step_size=2000, gamma=1)
@@ -120,12 +123,9 @@ class PretrainModule(pl.LightningModule):
         )
 
     def configure_optimizers(self):
-        optim = torch.optim.Adam(self.parameters(),
-                                 lr=self.hparams.max_lr,
-                                 weight_decay=self.hparams.weight_decay,
-                                 )
+        optimizer = torch.optim.SGD(self.parameters(), lr=self.hparams.max_lr, weight_decay=self.hparams.weight_decay,)
         scheduler = torch.optim.lr_scheduler.OneCycleLR(
-            optimizer=optim,
+            optimizer=optimizer,
             max_lr=self.hparams.max_lr,
             total_steps=self.hparams.total_steps,
             pct_start=self.hparams.pct_start,
@@ -136,7 +136,7 @@ class PretrainModule(pl.LightningModule):
             three_phase=False,
         )
         scheduler = {'scheduler': scheduler, 'interval': 'step'}
-        return [optim], [scheduler]
+        return [optimizer], [scheduler]
 
     def forward(self, z: PaddedBatch):
         z = self.encoder(z)
@@ -183,7 +183,7 @@ class PretrainModule(pl.LightningModule):
         x, y = batch
         y_hat = self(x)
         
-        loss = self.loss(y_hat, y)
+        loss = self.loss(self.softmax(y_hat)[:,1].to('cpu'), y.type(torch.FloatTensor))
         accuracy = self.accuracy(y_hat, y)
         roc_auc = self.roc_auc(y_hat, y)
 
@@ -197,7 +197,7 @@ class PretrainModule(pl.LightningModule):
         x, y = batch
         y_hat = self(x)
         
-        loss = self.loss(y_hat, y)
+        loss = self.loss(self.softmax(y_hat)[:,1].to('cpu'), y.type(torch.FloatTensor))
         accuracy = self.accuracy(y_hat, y)
         roc_auc = self.roc_auc(y_hat, y)
         
@@ -209,11 +209,13 @@ class PretrainModule(pl.LightningModule):
         x, y = batch
         y_hat = self(x)
         
-        loss = self.loss(y_hat, y)
-        accuracy = self.accuracy(y_hat, y)
-        roc_auc = self.roc_auc(y_hat, y)
-        
-        self.log('test_loss', loss) 
-        self.log('test_accuracy', accuracy)
-        self.log('test_roc_auc', roc_auc)
+        self.preds = y_hat if self.preds is None else torch.cat((self.preds, y_hat))
+        self.target = y if self.target is None else torch.cat((self.target, y))
+
+    def on_test_end(self):
+        print("ROC_AUC score - ", self.roc_auc(self.preds, self.target).item())
+        self.roc_metric.update(self.preds[:, 1], self.target)
+        fig_, ax_ = self.roc_metric.plot()
+        fig_.savefig('/wd/finbert/roc_curve_bert_bce.png')
+
 

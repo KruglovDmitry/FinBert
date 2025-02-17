@@ -57,6 +57,16 @@ from transformers.utils import (
 )
 from transformers import BertConfig
 
+import sys
+sys.path.insert(1, r'/wd/optical_mm')
+
+import source
+from source import propagator
+
+config_wei = source.Config(array_size = 512, pixel_size = 3.2e-6, scale_by_x = 4, distance = 0.015, vector_size = 4)
+prop_wei = propagator.Propagator(operator = propagator.Propagator_sinc_operator(), config = config_wei)
+distributed_mul_wei = source.DataParallel(source.OpticalMul(prop_wei, config_wei), output_device = 'cuda')
+
 logger = logging.get_logger(__name__)
 
 _CHECKPOINT_FOR_DOC = "google-bert/bert-base-uncased"
@@ -2023,12 +2033,24 @@ def scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=0.
         key = key.repeat_interleave(query.size(-3)//key.size(-3), -3)
         value = value.repeat_interleave(query.size(-3)//value.size(-3), -3)
     
-    attn_weight = query @ key.transpose(-2, -1) * scale_factor if enable_opita == False else optica_matmul(query, key.transpose(-2, -1)) * scale_factor
+    attn_weight = query @ key.transpose(-2, -1) * scale_factor if enable_opita == False else optica_matmul(query, key.transpose(-2, -1), True) * scale_factor
     attn_weight += attn_bias
     attn_weight = torch.softmax(attn_weight, dim=-1)
     attn_weight = torch.dropout(attn_weight, dropout_p, train=True)
-    result = attn_weight @ value if enable_opita == False else optica_matmul(attn_weight, value)
+    result = attn_weight @ value if enable_opita == False else optica_matmul(attn_weight, value, False)
     return result
 
-def optica_matmul(tensor_1: torch.Tensor, tensor_2: torch.Tensor) -> torch.Tensor:
-    pass
+def optica_matmul(tensor_1: torch.Tensor, tensor_2: torch.Tensor, wei: bool) -> torch.Tensor:
+
+    torch_res = tensor_1 @ tensor_2
+    if wei == True:
+        optic_res = distributed_mul_wei(tensor_1, tensor_2)**2
+    else:
+        config_out = source.Config(array_size = 512, pixel_size = 3.2e-6, scale_by_x = 4, distance = 0.015, vector_size = tensor_1.shape[3])
+        prop_out = propagator.Propagator(operator = propagator.Propagator_sinc_operator(), config = config_out)
+        optical_mul_out = source.DataParallel(source.OpticalMul(prop_out, config_out), output_device = 'cuda')
+
+        optic_res = optical_mul_out(tensor_1, tensor_2)**2
+    
+    k = torch_res[0,0,0,0] / optic_res[0,0,0,0]
+    return optic_res * k.item()
