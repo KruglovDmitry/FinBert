@@ -2,13 +2,14 @@ import os
 import torch
 import pickle
 import pytorch_lightning as pl
-from ptls.nn import TrxEncoder, PBLinear, PBL2Norm, PBLayerNorm, PBDropout
+from ptls.nn import PBLinear, PBL2Norm, PBLayerNorm, PBDropout
 
 from torch.utils.data import DataLoader, TensorDataset
 from ptls.data_load.datasets import ParquetDataset, ParquetFiles
 from ptls.frames.supervised.seq_to_target_dataset import SeqToTargetIterableDataset
 from ptls.frames import PtlsDataModule
 
+from Encoder import TrxEncoder
 from Model import PretrainModule
 
 print("Pythorch version - ", torch.__version__)
@@ -18,14 +19,14 @@ print("Pythorch version - ", torch.__version__)
 torch.multiprocessing.set_sharing_strategy('file_system')
 
 # load preprocessed data:
-with open('..\\finbert_data\\preproc_data', 'rb') as h:
+with open('..\\finbert_data_num\\preproc_data', 'rb') as h:
     preproc_data = pickle.load(h)
     numeric_values = preproc_data['numeric_values']
     embeddings = preproc_data['embeddings']
 
-test_pq_files  = ParquetFiles('..\\finbert_data\\test.parquet\\')
-train_pq_files = ParquetFiles('..\\finbert_data\\train.parquet\\')
-valid_pq_files = ParquetFiles('..\\finbert_data\\valid.parquet\\')
+test_pq_files  = ParquetFiles('..\\finbert_data_num\\test.parquet\\')
+train_pq_files = ParquetFiles('..\\finbert_data_num\\train.parquet\\')
+valid_pq_files = ParquetFiles('..\\finbert_data_num\\valid.parquet\\')
 
 test_dataset  = ParquetDataset(data_files=test_pq_files.data_files, shuffle_files=True)
 train_dataset = ParquetDataset(data_files=train_pq_files.data_files, shuffle_files=True)
@@ -55,12 +56,12 @@ trx_encoder_params = dict(
 trx_encoder = TrxEncoder(**trx_encoder_params)
 encoder = torch.nn.Sequential(
             trx_encoder,
-            PBLinear(trx_encoder.output_size, 64),
+            PBLinear(trx_encoder.output_size, 128),
             PBDropout(0.2))
 
 model = PretrainModule(
         encoder=encoder,
-        hidden_size=64,
+        hidden_size=128,
         loss_temperature=20.0,
         total_steps=30000,
         replace_proba=0.1,
@@ -88,7 +89,7 @@ trainer.test(model, dataloaders=finetune_dm)
 loaded_model = PretrainModule.load_from_checkpoint(
         './ckpts/BERT/epoch=4-step=50.ckpt',
         encoder=encoder,
-        hidden_size=64,
+        hidden_size=128,
         loss_temperature=20.0,
         total_steps=30000,
         replace_proba=0.1,

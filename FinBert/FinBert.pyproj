@@ -22,6 +22,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="BERT.py" />
+    <Compile Include="Encoder.py" />
+    <Compile Include="EncoderBase.py" />
     <Compile Include="FinBert.py" />
     <Compile Include="Model.py" />
   </ItemGroup>

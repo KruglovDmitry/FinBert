@@ -111,7 +111,7 @@ class PretrainModule(pl.LightningModule):
         )
 
         self.head = Head(
-            input_size=64,
+            input_size=128,
             hidden_layers_sizes=[32, 8],
             drop_probs=[0.1, 0],
             use_batch_norm=True,
@@ -156,15 +156,13 @@ class PretrainModule(pl.LightningModule):
             self.token_cls.expand(inputs_embeds.size(0), 1, H),
             inputs_embeds,
         ], dim=1)
+        
         attention_mask = torch.cat([
             torch.ones(inputs_embeds.size(0), 1, device=device),
             attention_mask,
         ], dim=1)
+        
         position_ids = torch.arange(T + 1, device=z.device).view(1, -1).expand(B, T + 1) + start_pos
-        global_attention_mask = torch.cat([
-            torch.ones(inputs_embeds.size(0), 1, device=device),
-            torch.zeros(inputs_embeds.size(0), inputs_embeds.size(1) - 1, device=device),
-        ], dim=1)
 
         out = self.transf(
             inputs_embeds=inputs_embeds,
